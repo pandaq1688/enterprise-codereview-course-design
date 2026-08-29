@@ -79,3 +79,55 @@ test('records rename with final path and oldPath metadata', async () => {
   assert.equal(renamed.status, 'RENAMED');
   assert.equal(renamed.oldPath, 'src/old.cpp');
 });
+
+test('fails with NO_REVIEWABLE_SOURCE when only unsupported changes exist', async () => {
+  const dir = await makeGitRepo();
+  await writeFile(dir, 'src/base.cpp', 'int a = 1;\n');
+  await git(dir, ['add', 'src/base.cpp']);
+  await git(dir, ['commit', '-m', 'base']);
+  await writeFile(dir, 'notes.txt', 'not source\n');
+
+  await assert.rejects(
+    () => collectGitChangedSource({
+      projectDir: dir, maxFiles: 50, maxFileChars: 80000, maxInputChars: 240000
+    }),
+    (err) => err.code === 'NO_REVIEWABLE_SOURCE'
+  );
+});
+
+test('fails with SOURCE_FILE_LIMIT_EXCEEDED when changed files exceed maxFiles', async () => {
+  const dir = await makeGitRepo();
+  await writeFile(dir, 'src/a.cpp', 'int a = 1;\n');
+  await git(dir, ['add', 'src/a.cpp']);
+  await git(dir, ['commit', '-m', 'base']);
+  await writeFile(dir, 'src/b.cpp', 'int b = 1;\n');
+  await writeFile(dir, 'src/c.cpp', 'int c = 1;\n');
+
+  await assert.rejects(
+    () => collectGitChangedSource({
+      projectDir: dir, maxFiles: 1, maxFileChars: 80000, maxInputChars: 240000
+    }),
+    (err) =>
+      err.code === 'SOURCE_FILE_LIMIT_EXCEEDED' &&
+      err.details.includes('files=2') &&
+      err.details.includes('maxFiles=1')
+  );
+});
+
+test('fails with SOURCE_SIZE_LIMIT_EXCEEDED when a file exceeds maxFileChars', async () => {
+  const dir = await makeGitRepo();
+  await writeFile(dir, 'src/big.cpp', 'int x = 1;\n');
+  await git(dir, ['add', 'src/big.cpp']);
+  await git(dir, ['commit', '-m', 'base']);
+  await writeFile(dir, 'src/big.cpp', 'int x = 2;\n');
+
+  await assert.rejects(
+    () => collectGitChangedSource({
+      projectDir: dir, maxFiles: 50, maxFileChars: 5, maxInputChars: 240000
+    }),
+    (err) =>
+      err.code === 'SOURCE_SIZE_LIMIT_EXCEEDED' &&
+      Array.isArray(err.details) &&
+      err.details.some((d) => String(d).includes('src/big.cpp'))
+  );
+});
