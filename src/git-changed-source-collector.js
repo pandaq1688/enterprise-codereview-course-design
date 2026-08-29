@@ -5,19 +5,13 @@ import { promisify } from 'node:util';
 import { languageFromFileName, shouldSkipDirName } from './shared/source-extensions.js';
 import { sha256Text } from './shared/hash.js';
 import { toPosixRelative } from './shared/path-security.js';
+import { numberLines } from './shared/source-text.js';
 import { AppError } from './shared/app-error.js';
 import { ErrorCodes } from './shared/error-codes.js';
 
 const execFile = promisify(execFileCb);
 
-/**
- * @param {string} text
- * @returns {string}
- */
-export function numberLines(text) {
-  const lines = text.split('\n');
-  return lines.map((line, i) => `${String(i + 1).padStart(6, ' ')}|${line}`).join('\n');
-}
+export { numberLines };
 
 /**
  * @param {string} text
