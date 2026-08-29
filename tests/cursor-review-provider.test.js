@@ -1,5 +1,7 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { spawn as realSpawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -11,9 +13,21 @@ import {
   TIMEOUT_SCRIPT,
   EXIT_NON_ZERO_SCRIPT,
   LARGE_STDOUT_SCRIPT,
+  LARGE_OUTPUT_FILE_SCRIPT,
   writeFakeCursorScript
 } from './helpers/fake-cursor-script.js';
 import { ErrorCodes } from '../src/shared/error-codes.js';
+
+function makeFakeChild() {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = () => {};
+  return child;
+}
 
 async function makePromptAndOutput(dir) {
   const promptFile = path.join(dir, 'prompt.txt');
@@ -251,4 +265,98 @@ test('FakeReviewProvider waits, optionally writes output file, returns fixed raw
   assert.equal(result.rawOutput, rawOutput);
   assert.equal(result.exitCode, 0);
   assert.equal(await fs.readFile(outputFile, 'utf8'), rawOutput);
+});
+
+test('abort signal yields CURSOR_ABORTED not CURSOR_TIMEOUT', async () => {
+  const dir = await makeTempDir('crs-cursor-abort-');
+  const scriptPath = await writeFakeCursorScript(dir, 'slow-agent.mjs', TIMEOUT_SCRIPT);
+  const { promptFile, outputFile } = await makePromptAndOutput(dir);
+  const ac = new AbortController();
+
+  const provider = createCursorReviewProvider({
+    command: process.execPath,
+    args: [scriptPath, '--output', '{outputFile}'],
+    timeoutMs: 60_000,
+    maxOutputChars: 100_000
+  });
+
+  const pending = provider.review({
+    projectDir: dir,
+    promptFile,
+    outputFile,
+    timeoutMs: 60_000,
+    signal: ac.signal
+  });
+
+  setTimeout(() => ac.abort(), 30);
+
+  await assert.rejects(
+    () => pending,
+    (err) =>
+      err.code === ErrorCodes.CURSOR_ABORTED &&
+      err.code !== ErrorCodes.CURSOR_TIMEOUT &&
+      !String(err.message).includes('超时')
+  );
+});
+
+test('timer after clean exit does not yield CURSOR_TIMEOUT', async () => {
+  mock.timers.enable({ apis: ['setTimeout'], now: 0 });
+  try {
+    const dir = await makeTempDir('crs-cursor-race-');
+    const { promptFile, outputFile } = await makePromptAndOutput(dir);
+    const child = makeFakeChild();
+
+    const provider = createCursorReviewProvider({
+      command: 'fake-cursor',
+      args: [],
+      timeoutMs: 50,
+      maxOutputChars: 100_000,
+      spawnImpl: () => child
+    });
+
+    const pending = provider.review({
+      projectDir: dir,
+      promptFile,
+      outputFile,
+      timeoutMs: 50
+    });
+
+    // Process already exited; close event not yet delivered — timer must not win.
+    child.exitCode = 0;
+    mock.timers.tick(50);
+    child.emit('close', 0);
+
+    const result = await pending;
+    assert.equal(result.exitCode, 0);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('oversized output file yields CURSOR_OUTPUT_TOO_LARGE', async () => {
+  const dir = await makeTempDir('crs-cursor-outfile-');
+  const scriptPath = await writeFakeCursorScript(
+    dir,
+    'large-out-agent.mjs',
+    LARGE_OUTPUT_FILE_SCRIPT
+  );
+  const { promptFile, outputFile } = await makePromptAndOutput(dir);
+
+  const provider = createCursorReviewProvider({
+    command: process.execPath,
+    args: [scriptPath, '--output', '{outputFile}'],
+    timeoutMs: 10_000,
+    maxOutputChars: 100
+  });
+
+  await assert.rejects(
+    () =>
+      provider.review({
+        projectDir: dir,
+        promptFile,
+        outputFile,
+        timeoutMs: 10_000
+      }),
+    (err) => err.code === ErrorCodes.CURSOR_OUTPUT_TOO_LARGE
+  );
 });

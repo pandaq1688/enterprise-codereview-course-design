@@ -20,6 +20,13 @@ function hasOutputFilePlaceholder(args) {
   return args.includes('{outputFile}');
 }
 
+function childHasExited(child) {
+  if (!child) return false;
+  if (child.exitCode !== null && child.exitCode !== undefined) return true;
+  if (child.signalCode !== null && child.signalCode !== undefined) return true;
+  return false;
+}
+
 async function safeUnlink(filePath) {
   if (!filePath) return;
   try {
@@ -83,11 +90,13 @@ export function createCursorReviewProvider({
 
     let child;
     let timedOut = false;
+    let aborted = false;
     let outputTooLarge = false;
     let stdout = '';
     let stderr = '';
     let exitCode = null;
     let spawnError = null;
+    let childExited = false;
 
     try {
       await new Promise((resolve, reject) => {
@@ -119,7 +128,8 @@ export function createCursorReviewProvider({
         };
 
         const onAbort = () => {
-          timedOut = true;
+          if (settled || childExited || childHasExited(child)) return;
+          aborted = true;
           killProcessTree(child);
         };
 
@@ -134,6 +144,7 @@ export function createCursorReviewProvider({
         }
 
         const timer = setTimeout(() => {
+          if (settled || childExited || aborted || childHasExited(child)) return;
           timedOut = true;
           killProcessTree(child);
         }, effectiveTimeout);
@@ -157,6 +168,7 @@ export function createCursorReviewProvider({
         });
 
         child.on('close', (code) => {
+          childExited = true;
           exitCode = code;
           finish();
         });
@@ -167,6 +179,9 @@ export function createCursorReviewProvider({
           ErrorCodes.CURSOR_START_FAILED,
           `无法启动 Cursor 命令: ${command}`
         );
+      }
+      if (aborted) {
+        throw new AppError(ErrorCodes.CURSOR_ABORTED, 'Cursor 审查已取消');
       }
       if (timedOut) {
         throw new AppError(ErrorCodes.CURSOR_TIMEOUT, 'Cursor 审查超时');
@@ -187,8 +202,16 @@ export function createCursorReviewProvider({
       let rawOutput = stdout;
       if (useOutputFile) {
         try {
+          const st = await fs.stat(outputFile);
+          if (st.size > maxOutputChars) {
+            throw new AppError(
+              ErrorCodes.CURSOR_OUTPUT_TOO_LARGE,
+              'Cursor 输出超过限制'
+            );
+          }
           rawOutput = await fs.readFile(outputFile, 'utf8');
-        } catch {
+        } catch (err) {
+          if (err instanceof AppError) throw err;
           rawOutput = '';
         }
         if (rawOutput.length > maxOutputChars) {

@@ -18,6 +18,11 @@ export const EXIT_NON_ZERO_SCRIPT = `process.exit(2);
 export const LARGE_STDOUT_SCRIPT = `process.stdout.write('x'.repeat(1000));
 `;
 
+export const LARGE_OUTPUT_FILE_SCRIPT = `import fs from 'node:fs';
+const output = process.argv[process.argv.indexOf('--output') + 1];
+fs.writeFileSync(output, 'y'.repeat(1000));
+`;
+
 /**
  * @param {string} dir
  * @param {string} name
