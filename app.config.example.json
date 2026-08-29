@@ -1,0 +1,52 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 3100
+  },
+  "security": {
+    "allowedRoots": ["D:/workspaces"]
+  },
+  "review": {
+    "maxFiles": 50,
+    "maxFileChars": 80000,
+    "maxInputChars": 240000,
+    "maxRequirementChars": 50000,
+    "allowedExtensions": [
+      ".c", ".cc", ".cpp", ".cxx",
+      ".h", ".hpp", ".hxx", ".java"
+    ]
+  },
+  "cursor": {
+    "command": "cursor-agent",
+    "args": [
+      "--prompt-file", "{promptFile}",
+      "--workspace", "{projectDir}",
+      "--output", "{outputFile}"
+    ],
+    "timeoutMs": 600000,
+    "maxOutputChars": 2000000
+  },
+  "reports": {
+    "dir": "./data/reports",
+    "includeAbsolutePaths": false
+  },
+  "checklist": {
+    "enabled": true,
+    "path": "./docs/rules/review-checklist.md",
+    "includePaths": ["."],
+    "excludePaths": []
+  },
+  "ai": {
+    "provider": "cursor",
+    "remote": {
+      "baseUrl": "https://api.example.com",
+      "model": "review-model",
+      "apiKeyEnv": "REMOTE_LLM_API_KEY",
+      "timeoutMs": 600000
+    }
+  },
+  "scheduler": {
+    "stateFile": "./data/scheduler-state.json",
+    "profiles": []
+  }
+}
