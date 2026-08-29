@@ -324,6 +324,60 @@ test('PF-006 caps maintainability, weak performance, and OTHER mid/high risk at 
   assert.match(dOther.reason, /[\u4e00-\u9fff]/);
 });
 
+test('PF-006 caps are not undone by PF-007 floor on 服务不可用 or 进程退出', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'MAINTAINABILITY',
+        risk_level: 'HIGH',
+        title: '结构混乱',
+        description: '模块耦合过高可能导致服务不可用',
+        evidence: 'class Foo',
+        line_start: 3,
+        line_end: 3
+      }),
+      rawFinding({
+        category: 'OTHER',
+        risk_level: 'CRITICAL',
+        title: '杂项声称',
+        description: '声称会导致进程退出',
+        evidence: 'exitPath()',
+        line_start: 3,
+        line_end: 3,
+        file_path: 'src/b.cpp'
+      }),
+      rawFinding({
+        category: 'PERFORMANCE',
+        risk_level: 'HIGH',
+        title: '偏慢',
+        description: '响应慢时服务不可用',
+        evidence: 'doWork()',
+        line_start: 3,
+        line_end: 3,
+        file_path: 'src/c.cpp'
+      })
+    ],
+    selectedFiles: [
+      selected('src/a.cpp', [3], 10),
+      selected('src/b.cpp', [3], 10),
+      selected('src/c.cpp', [3], 10)
+    ],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  assert.equal(result.findings[0].finalRisk, 'LOW');
+  assert.ok(decision(result.findings[0], 'PF-006'));
+  assert.ok(!decision(result.findings[0], 'PF-007') || decision(result.findings[0], 'PF-007').action !== 'CORRECTED');
+
+  assert.equal(result.findings[1].finalRisk, 'LOW');
+  assert.ok(decision(result.findings[1], 'PF-006'));
+  assert.ok(!decision(result.findings[1], 'PF-007') || decision(result.findings[1], 'PF-007').action !== 'CORRECTED');
+
+  assert.equal(result.findings[2].finalRisk, 'LOW');
+  assert.ok(decision(result.findings[2], 'PF-006'));
+  assert.ok(!decision(result.findings[2], 'PF-007') || decision(result.findings[2], 'PF-007').action !== 'CORRECTED');
+});
+
 test('PF-007 floors severe memory issues at HIGH and caps non-catastrophic CRITICAL', () => {
   const uaf = applyPostReviewPolicy({
     rawFindings: [

@@ -27,6 +27,15 @@ const CATASTROPHIC_RE =
  * @returns {boolean}
  */
 function isSevereFloorCandidate(finding) {
+  // PF-006 already caps these; never floor them back up via PF-007.
+  if (
+    finding.category === 'MAINTAINABILITY' ||
+    finding.category === 'PERFORMANCE' ||
+    finding.category === 'OTHER'
+  ) {
+    return false;
+  }
+
   const blob = `${finding.title}\n${finding.description}\n${finding.evidence}`;
   if (finding.category === 'MEMORY_SAFETY') {
     return /未初始化|空指针|越界|use-after-free|重复释放/i.test(blob);
