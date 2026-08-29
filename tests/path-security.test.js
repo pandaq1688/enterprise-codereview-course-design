@@ -38,6 +38,39 @@ test('toPosixRelative returns forward-slash paths', async () => {
   assert.equal(rel, 'src/a.cpp');
 });
 
+test('assertInsideAllowedRoots rejects empty allowedRoots with INVALID_REQUEST', async () => {
+  const root = await makeTempDir();
+  const realPath = await resolveRealPath(root);
+  assert.throws(
+    () => assertInsideAllowedRoots(realPath, []),
+    (err) => err.code === ErrorCodes.INVALID_REQUEST
+  );
+});
+
+test('resolveRealPath throws PATH_NOT_FOUND for a missing path', async () => {
+  const root = await makeTempDir();
+  const missing = path.join(root, 'does-not-exist');
+  await assert.rejects(
+    () => resolveRealPath(missing),
+    (err) => err.code === ErrorCodes.PATH_NOT_FOUND
+  );
+});
+
+test('assertInsideAllowedRoots uses PATH_SYMLINK_ESCAPE when lexical path is inside but realpath is outside', async () => {
+  const root = await makeTempDir();
+  const allowed = path.join(root, 'allowed');
+  const outside = path.join(root, 'outside');
+  await fs.mkdir(allowed, { recursive: true });
+  await fs.mkdir(outside, { recursive: true });
+  const realAllowed = await resolveRealPath(allowed);
+  const realOutside = await resolveRealPath(outside);
+  const lexicalLink = path.join(allowed, 'escape');
+  assert.throws(
+    () => assertInsideAllowedRoots(realOutside, [realAllowed], lexicalLink),
+    (err) => err.code === ErrorCodes.PATH_SYMLINK_ESCAPE
+  );
+});
+
 test('symlink whose realpath leaves allowedRoots is PATH_SYMLINK_ESCAPE', async (t) => {
   const root = await makeTempDir();
   const allowed = path.join(root, 'allowed');
@@ -53,10 +86,8 @@ test('symlink whose realpath leaves allowedRoots is PATH_SYMLINK_ESCAPE', async 
   }
   const realLink = await resolveRealPath(link);
   const realAllowed = await resolveRealPath(allowed);
-  const { assertInsideAllowedRoots } = await import('../src/shared/path-security.js');
-  const { ErrorCodes } = await import('../src/shared/error-codes.js');
   assert.throws(
-    () => assertInsideAllowedRoots(realLink, [realAllowed]),
-    (err) => err.code === ErrorCodes.PATH_SYMLINK_ESCAPE || err.code === ErrorCodes.PATH_OUTSIDE_ALLOWED_ROOT
+    () => assertInsideAllowedRoots(realLink, [realAllowed], link),
+    (err) => err.code === ErrorCodes.PATH_SYMLINK_ESCAPE
   );
 });
