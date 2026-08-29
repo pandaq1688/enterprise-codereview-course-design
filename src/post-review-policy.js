@@ -13,7 +13,8 @@ const VALID_CATEGORIES = new Set([
 const MID_HIGH_RISKS = new Set(['MEDIUM', 'HIGH', 'CRITICAL']);
 const SPECULATIVE_RE = /可能|也许|推测|假设|无法确认/;
 const UNKNOWN_INTERFACE_RE = /未知第三方接口|未知异步语义|旧版本升级路径|未提供的旧版本/;
-const CODE_EVIDENCE_RE = /->|::|\.|\[|\]|\(|\)|=|;|return\b|\bnull\b|\bnullptr\b|p->x/i;
+const CODE_EVIDENCE_RE = /->|::|\bnull\b|\bnullptr\b|\b[A-Za-z_]\w*\b/i;
+const CODE_SEMANTICS_RE = /未判空|解引用|越界|未初始化/;
 
 /**
  * @param {number} index
@@ -77,8 +78,10 @@ function isCrashClass(f) {
 function hasConcreteCodeEvidence(evidence) {
   const e = String(evidence ?? '').trim();
   if (!e) return false;
-  if (SPECULATIVE_RE.test(e) && !CODE_EVIDENCE_RE.test(e)) return false;
-  return CODE_EVIDENCE_RE.test(e) || /未判空|解引用|越界|未初始化/.test(e);
+  if (SPECULATIVE_RE.test(e) && !CODE_EVIDENCE_RE.test(e) && !CODE_SEMANTICS_RE.test(e)) {
+    return false;
+  }
+  return CODE_EVIDENCE_RE.test(e) || CODE_SEMANTICS_RE.test(e);
 }
 
 /**

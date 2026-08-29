@@ -115,6 +115,92 @@ test('PF-003 exempts out-of-range lines and downgrades non-crash off-diff findin
   assert.ok(!dCrash || dCrash.action !== 'DOWNGRADED');
 });
 
+test('PF-003 downgrades mid/high risk when line numbers are missing or non-integer', () => {
+  const missing = applyPostReviewPolicy({
+    rawFindings: [
+      {
+        category: 'CORRECTNESS',
+        risk_level: 'HIGH',
+        title: '逻辑错误',
+        description: '确定的逻辑错误',
+        file_path: 'src/a.cpp',
+        evidence: 'return 1',
+        requirement_reference: '',
+        fix_suggestion: '',
+        fix_code: ''
+      }
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.equal(missing.findings[0].lineStart, null);
+  assert.equal(missing.findings[0].finalRisk, 'LOW');
+  const dMissing = decision(missing.findings[0], 'PF-003');
+  assert.ok(dMissing);
+  assert.equal(dMissing.action, 'DOWNGRADED');
+  assert.equal(dMissing.afterRisk, 'LOW');
+  assert.match(dMissing.reason, /[\u4e00-\u9fff]/);
+
+  const nonInteger = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        risk_level: 'MEDIUM',
+        description: '确定的逻辑错误',
+        evidence: 'return 1',
+        line_start: 'abc',
+        line_end: 3.5
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.equal(nonInteger.findings[0].lineStart, null);
+  assert.equal(nonInteger.findings[0].finalRisk, 'LOW');
+  const dNonInt = decision(nonInteger.findings[0], 'PF-003');
+  assert.ok(dNonInt);
+  assert.equal(dNonInt.action, 'DOWNGRADED');
+  assert.equal(dNonInt.afterRisk, 'LOW');
+  assert.match(dNonInt.reason, /[\u4e00-\u9fff]/);
+});
+
+test('PF-004 does not treat bare punctuation as concrete code evidence', () => {
+  const dotOnly = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        title: '可能存在问题',
+        description: '这里可能有缺陷',
+        evidence: '.',
+        line_start: 3,
+        line_end: 3
+      })
+    ],
+    selectedFiles: [selected()],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.equal(dotOnly.findings[0].status, 'EXEMPTED');
+  const dDot = decision(dotOnly.findings[0], 'PF-004');
+  assert.ok(dDot);
+  assert.equal(dDot.action, 'EXEMPTED');
+
+  const parenNote = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        title: '可能存在问题',
+        description: '这里可能有缺陷',
+        evidence: '(见说明)',
+        line_start: 3,
+        line_end: 3
+      })
+    ],
+    selectedFiles: [selected()],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.equal(parenNote.findings[0].status, 'EXEMPTED');
+  const dParen = decision(parenNote.findings[0], 'PF-004');
+  assert.ok(dParen);
+  assert.equal(dParen.action, 'EXEMPTED');
+});
+
 test('PF-004 exempts speculative findings without concrete evidence', () => {
   const speculative = applyPostReviewPolicy({
     rawFindings: [
