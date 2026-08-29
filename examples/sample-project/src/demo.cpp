@@ -1,32 +1,41 @@
+#include <cctype>
 #include <cstdio>
-#include <cstring>
+#include <string>
 
-// 简单字符串工具：将输入复制到输出缓冲区
-int copyString(const char* input, char* output, std::size_t outSize) {
-    if (input == nullptr || output == nullptr || outSize == 0) {
-        return -1;
+// 去除首尾空白（ASCII）
+static std::string trimAscii(const std::string& s) {
+    std::size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) {
+        ++start;
     }
-    std::strncpy(output, input, outSize - 1);
-    output[outSize - 1] = '\0';
-    return 0;
+    std::size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+        --end;
+    }
+    return s.substr(start, end - start);
 }
 
-// 演示：未校验指针即解引用（明显缺陷，供 AC-09 审查验证）
-int parseCount(const char* text) {
-    // BUG: text 可能为 nullptr，此处直接 *text 导致空指针解引用
-    if (*text == '\0') {
-        return 0;
+// 将输入 trim 并转为小写；与 Demo.java / requirement.md 语义一致
+std::string normalize(const char* input) {
+    // BUG: input 可能为 nullptr，此处直接 *input 导致空指针解引用
+    if (*input == '\0') {
+        return "";
     }
-    return static_cast<int>(std::strlen(text));
+    std::string trimmed = trimAscii(input);
+    if (trimmed.empty()) {
+        return "";
+    }
+    for (char& ch : trimmed) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return trimmed;
 }
 
 int main() {
     char* untrusted = nullptr;  // 模拟外部输入未校验
-    int n = parseCount(untrusted);  // 传入 nullptr → 空指针解引用
-    std::printf("count=%d\n", n);
+    std::string result = normalize(untrusted);  // 传入 nullptr → 空指针解引用
+    std::printf("normalized=%s\n", result.c_str());
 
-    char buf[32];
-    copyString("hello", buf, sizeof(buf));
-    std::printf("copied=%s\n", buf);
+    std::printf("%s\n", normalize("  Hello World  ").c_str());
     return 0;
 }

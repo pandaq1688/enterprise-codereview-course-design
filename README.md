@@ -41,11 +41,7 @@ Copy-Item app.config.example.json app.config.json
 npm test
 ```
 
-在 **Windows + Node 24** 上，若 `node --test tests` 将目录误当作模块而失败，请改用显式 glob：
-
-```bash
-node --test tests/**/*.test.js
-```
+`npm test` 通过 `node --test tests/**/*.test.js` 发现全部测试文件（在 Windows + Node 24 上，`node --test tests` 无法将目录当作测试根目录，故使用显式 glob）。
 
 预期：全部通过（部分 symlink 相关用例在无权限环境会 skip）。
 
@@ -106,8 +102,8 @@ $env:REMOTE_LLM_API_KEY = "your-key-here"
 
 | 文件 | 说明 |
 |------|------|
-| `src/demo.cpp` | 含一处**明显空指针解引用**，供 Cursor 人工审查验证 |
-| `src/Demo.java` | 简单 Java 示例 |
+| `src/demo.cpp` | 与需求一致的 `normalize()` 实现，含一处**明显空指针解引用**供 AC-09 审查 |
+| `src/Demo.java` | 同等语义的 Java `normalize()` 实现 |
 | `docs/requirement.md` | 输入输出约定 |
 
 ### AC-09 人工验收清单
