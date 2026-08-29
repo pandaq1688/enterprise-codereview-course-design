@@ -17,6 +17,17 @@ import {
   createChecklistFixture,
   createPathOutsideFixture
 } from '../helpers/e2e-fixtures.js';
+import { createFakeReviewProvider } from '../helpers/fake-review-provider.js';
+import { createReviewJobService } from '../../src/review-job-service.js';
+import { createFileReportRepository } from '../../src/file-report-repository.js';
+import { collectFullDirectorySource } from '../../src/full-directory-source-collector.js';
+import { collectGitChangedSource } from '../../src/git-changed-source-collector.js';
+import { loadRequirement } from '../../src/requirement-loader.js';
+import { resolveRules } from '../../src/rule-resolver.js';
+import { buildPrompt } from '../../src/prompt-builder.js';
+import { parseReviewOutput } from '../../src/review-result-parser.js';
+import { applyPostReviewPolicy } from '../../src/post-review-policy.js';
+import { toDisplayPath } from '../../src/request-validator.js';
 
 /**
  * @param {import('node:http').Server} server
@@ -288,4 +299,339 @@ test('AC-04: project path outside allowedRoots returns 400 PATH_OUTSIDE_ALLOWED_
   } finally {
     await app.stop({ waitMs: 5_000 });
   }
+});
+
+const AC06_FAKE_JSON = JSON.stringify({
+  summary: 'AC-06 mixed findings',
+  overall_risk: 'CRITICAL',
+  findings: [
+    {
+      category: 'CORRECTNESS',
+      risk_level: 'HIGH',
+      title: '空指针解引用',
+      description: '在第 1 行对 p 解引用，p 未判空',
+      file_path: 'src/a.cpp',
+      line_start: 1,
+      line_end: 1,
+      evidence: 'p->x 且 p 未判空',
+      requirement_reference: '',
+      fix_suggestion: '先判空',
+      fix_code: ''
+    },
+    {
+      category: 'CORRECTNESS',
+      risk_level: 'MEDIUM',
+      title: '可能存在隐患',
+      description: '这里可能有空指针问题',
+      file_path: 'src/a.cpp',
+      line_start: 1,
+      line_end: 1,
+      evidence: '',
+      requirement_reference: '',
+      fix_suggestion: '',
+      fix_code: ''
+    },
+    {
+      category: 'CORRECTNESS',
+      risk_level: 'CRITICAL',
+      title: '越界文件问题',
+      description: '不在本次选中范围内的文件',
+      file_path: 'src/other.cpp',
+      line_start: 1,
+      line_end: 1,
+      evidence: 'other()',
+      requirement_reference: '',
+      fix_suggestion: '',
+      fix_code: ''
+    },
+    {
+      category: 'CORRECTNESS',
+      risk_level: 'MEDIUM',
+      title: '空 指针 解引用',
+      description: '重复项：与首项同类问题',
+      file_path: 'src/a.cpp',
+      line_start: 1,
+      line_end: 1,
+      evidence: 'p->y',
+      requirement_reference: '',
+      fix_suggestion: '',
+      fix_code: ''
+    },
+    {
+      category: 'CORRECTNESS',
+      risk_level: 'FOO',
+      title: '非法风险等级样例',
+      description: '风险字段为非法枚举 FOO',
+      file_path: 'src/a.cpp',
+      line_start: 2,
+      line_end: 2,
+      evidence: 'int x = 1',
+      requirement_reference: '',
+      fix_suggestion: '',
+      fix_code: ''
+    }
+  ],
+  evidence: [],
+  recommended_actions: []
+});
+
+test('AC-05: invalid AI JSON yields FAILED AI_OUTPUT_INVALID_JSON, empty findings, rawOutput kept', async () => {
+  const fixture = await createFullDirectoryFixture();
+  const provider = createRecordingFakeProvider({ rawOutput: 'not-json{{{' });
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider
+  });
+
+  try {
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        projectDir: fixture.projectDir,
+        requirementFile: fixture.requirementFile,
+        sourceMode: 'FULL_DIRECTORY',
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'FAILED');
+    assert.equal(job.error.code, ErrorCodes.AI_OUTPUT_INVALID_JSON);
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${created.json.reviewId}`);
+    assert.equal(reportRes.statusCode, 200);
+    const report = reportRes.json;
+    assert.equal(report.status, 'FAILED');
+    assert.equal(report.errors[0].code, ErrorCodes.AI_OUTPUT_INVALID_JSON);
+    assert.deepEqual(report.result.findings, []);
+    assert.ok(report.ai.rawOutput);
+    assert.ok(report.ai.rawOutput.includes('not-json'));
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+test('AC-06: policy statuses/policyIds; overallRisk from active primary findings only', async () => {
+  const fixture = await createFullDirectoryFixture();
+  const provider = createRecordingFakeProvider({ rawOutput: AC06_FAKE_JSON });
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider
+  });
+
+  try {
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        projectDir: fixture.projectDir,
+        requirementFile: fixture.requirementFile,
+        sourceMode: 'FULL_DIRECTORY',
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'SUCCEEDED');
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${created.json.reviewId}`);
+    const findings = reportRes.json.result.findings;
+    assert.ok(findings.length >= 5);
+
+    const byTitle = (t) => findings.find((f) => f.title === t || f.title?.includes?.(t));
+    const valid = byTitle('空指针解引用');
+    const speculative = byTitle('可能存在隐患');
+    const oos = byTitle('越界文件问题');
+    const dup = findings.find((f) => f.status === 'MERGED');
+    const foo = byTitle('非法风险等级样例');
+
+    assert.ok(valid);
+    assert.notEqual(valid.status, 'EXEMPTED');
+    assert.notEqual(valid.status, 'MERGED');
+    assert.equal(valid.finalRisk, 'HIGH');
+    assert.ok(valid.decisions.some((d) => d.policyId === 'PF-001'));
+
+    assert.ok(speculative);
+    assert.equal(speculative.status, 'EXEMPTED');
+    assert.ok(speculative.decisions.some((d) => d.policyId === 'PF-004' && d.action === 'EXEMPTED'));
+
+    assert.ok(oos);
+    assert.equal(oos.status, 'EXEMPTED');
+    assert.ok(oos.decisions.some((d) => d.policyId === 'PF-002' && d.action === 'EXEMPTED'));
+
+    assert.ok(dup);
+    assert.ok(dup.decisions.some((d) => d.policyId === 'PF-009' && d.action === 'MERGED'));
+
+    assert.ok(foo);
+    assert.ok(foo.decisions.some((d) => d.policyId === 'PF-001' && d.action === 'CORRECTED'));
+    assert.equal(foo.finalRisk, 'LOW');
+
+    assert.equal(reportRes.json.result.overallRisk, 'HIGH');
+    assert.equal(reportRes.json.ai.rawOverallRisk, 'CRITICAL');
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+test('AC-07: report.json keeps raw script text; report.html escapes it', async () => {
+  const fixture = await createFullDirectoryFixture();
+  const xssDesc = '触发 <script>alert(1)</script> 注入';
+  const fakeJson = JSON.stringify({
+    summary: 'AC-07 xss',
+    overall_risk: 'LOW',
+    findings: [
+      {
+        category: 'CORRECTNESS',
+        risk_level: 'LOW',
+        title: 'XSS sample',
+        description: xssDesc,
+        file_path: 'src/a.cpp',
+        line_start: 1,
+        line_end: 1,
+        evidence: 'int x = 1',
+        requirement_reference: '',
+        fix_suggestion: '',
+        fix_code: ''
+      }
+    ],
+    evidence: [],
+    recommended_actions: []
+  });
+  const provider = createRecordingFakeProvider({ rawOutput: fakeJson });
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider
+  });
+
+  try {
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        projectDir: fixture.projectDir,
+        requirementFile: fixture.requirementFile,
+        sourceMode: 'FULL_DIRECTORY',
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'SUCCEEDED');
+    const reviewId = created.json.reviewId;
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${reviewId}`);
+    const finding = reportRes.json.result.findings.find((f) => f.title === 'XSS sample');
+    assert.ok(finding);
+    assert.equal(finding.description, xssDesc);
+    assert.ok(finding.description.includes('<script>'));
+
+    const htmlPath = path.join(fixture.reportsDir, reviewId, 'report.html');
+    const html = await fs.readFile(htmlPath, 'utf8');
+    assert.equal(html.includes('<script>alert(1)</script>'), false);
+    assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+function createJobServiceForAc08({ reportsDir, provider, idFactory }) {
+  const repository = createFileReportRepository({ reportsDir, idFactory });
+  const quietLogger = createLogger({
+    stream: { write() {} },
+    clock: createSystemClock()
+  });
+  const service = createReviewJobService({
+    config: {
+      review: {
+        maxFiles: 50,
+        maxFileChars: 80000,
+        maxInputChars: 240000,
+        maxRequirementChars: 50000
+      },
+      cursor: { timeoutMs: 600000, maxOutputChars: 2000000 },
+      reports: { dir: reportsDir, includeAbsolutePaths: false },
+      ai: { provider: 'fake' }
+    },
+    gitChangedCollector: collectGitChangedSource,
+    fullDirectoryCollector: collectFullDirectorySource,
+    requirementLoader: loadRequirement,
+    ruleResolver: resolveRules,
+    promptBuilder: buildPrompt,
+    provider,
+    parser: parseReviewOutput,
+    policy: applyPostReviewPolicy,
+    repository,
+    clock: createSystemClock(),
+    logger: quietLogger,
+    idFactory: idFactory ?? (() => repository.createReviewId())
+  });
+  return { service, repository };
+}
+
+test('AC-08: restart keeps listSummaries report; in-memory QUEUED is not resurrected', async () => {
+  const fixture = await createFullDirectoryFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: FAKE_OK_JSON });
+  const { service: service1, repository } = createJobServiceForAc08({
+    reportsDir: fixture.reportsDir,
+    provider,
+    idFactory: () => `ac08-${++n}`
+  });
+
+  const normalized = {
+    projectDir: fixture.projectDir,
+    requirementFile: fixture.requirementFile,
+    sourceMode: 'FULL_DIRECTORY',
+    checklist: { enabled: false, path: null, includePaths: ['.'], excludePaths: [] },
+    projectName: path.basename(fixture.projectDir),
+    projectDirDisplay: toDisplayPath(fixture.projectDir),
+    requirementFileDisplay: toDisplayPath(fixture.requirementFile),
+    checklistFileDisplay: null
+  };
+
+  const { reviewId: doneId } = service1.enqueue(normalized, { triggerType: 'MANUAL' });
+  const deadline = Date.now() + 10_000;
+  let doneJob;
+  while (Date.now() < deadline) {
+    doneJob = await service1.getJob(doneId);
+    if (doneJob && (doneJob.status === 'SUCCEEDED' || doneJob.status === 'FAILED')) break;
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  assert.equal(doneJob.status, 'SUCCEEDED');
+
+  const slow = createFakeReviewProvider({ rawOutput: FAKE_OK_JSON, delayMs: 60_000 });
+  const { service: serviceSlow } = createJobServiceForAc08({
+    reportsDir: fixture.reportsDir,
+    provider: slow,
+    idFactory: () => `ac08-q-${++n}`
+  });
+  const queued = serviceSlow.enqueue(normalized, { triggerType: 'MANUAL' });
+  assert.equal(queued.status, 'QUEUED');
+  const queuedId = queued.reviewId;
+
+  // Simulate restart: new job service only sharing reportsDir (drop in-memory jobs).
+  const { service: service2, repository: repo2 } = createJobServiceForAc08({
+    reportsDir: fixture.reportsDir,
+    provider: createFakeReviewProvider({ rawOutput: FAKE_OK_JSON }),
+    idFactory: () => `ac08-r-${++n}`
+  });
+
+  const summaries = await repo2.listSummaries();
+  assert.ok(
+    summaries.some((s) => s.reviewId === doneId),
+    'listSummaries must retain saved report after restart'
+  );
+
+  const resurrected = await service2.getJob(queuedId);
+  assert.ok(
+    resurrected == null || resurrected.status !== 'QUEUED',
+    'in-memory QUEUED job must not appear as QUEUED after restart'
+  );
+  assert.equal(
+    summaries.some((s) => s.reviewId === queuedId && s.status === 'QUEUED'),
+    false
+  );
+
+  // Abort the discarded slow worker so the test process does not wait on delayMs.
+  serviceSlow.pauseAccepting();
+  await serviceSlow.waitForIdle(100);
+  assert.ok(repository);
 });
