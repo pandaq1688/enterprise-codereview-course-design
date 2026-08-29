@@ -1,0 +1,4 @@
+node_modules/
+data/
+app.config.json
+.worktrees/
