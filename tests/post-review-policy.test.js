@@ -260,3 +260,246 @@ test('PF-005 exempts unknown third-party and upgrade-path conclusions', () => {
   assert.equal(d.action, 'EXEMPTED');
   assert.match(d.reason, /[\u4e00-\u9fff]/);
 });
+
+test('PF-006 caps maintainability, weak performance, and OTHER mid/high risk at LOW', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'MAINTAINABILITY',
+        risk_level: 'HIGH',
+        title: '命名不佳',
+        description: '变量命名难以阅读',
+        evidence: 'int x',
+        line_start: 3,
+        line_end: 3
+      }),
+      rawFinding({
+        category: 'PERFORMANCE',
+        risk_level: 'HIGH',
+        title: '可能偏慢',
+        description: '这段代码看起来不够快',
+        evidence: 'doWork()',
+        line_start: 3,
+        line_end: 3,
+        file_path: 'src/b.cpp'
+      }),
+      rawFinding({
+        category: 'OTHER',
+        risk_level: 'CRITICAL',
+        title: '杂项问题',
+        description: '其他类型的严重声称',
+        evidence: 'foo()',
+        line_start: 3,
+        line_end: 3,
+        file_path: 'src/c.cpp'
+      })
+    ],
+    selectedFiles: [
+      selected('src/a.cpp', [3], 10),
+      selected('src/b.cpp', [3], 10),
+      selected('src/c.cpp', [3], 10)
+    ],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  assert.equal(result.findings[0].finalRisk, 'LOW');
+  const dMaint = decision(result.findings[0], 'PF-006');
+  assert.ok(dMaint);
+  assert.equal(dMaint.action, 'DOWNGRADED');
+  assert.equal(dMaint.afterRisk, 'LOW');
+  assert.match(dMaint.reason, /[\u4e00-\u9fff]/);
+
+  assert.equal(result.findings[1].finalRisk, 'LOW');
+  const dPerf = decision(result.findings[1], 'PF-006');
+  assert.ok(dPerf);
+  assert.equal(dPerf.action, 'DOWNGRADED');
+  assert.equal(dPerf.afterRisk, 'LOW');
+  assert.match(dPerf.reason, /[\u4e00-\u9fff]/);
+
+  assert.equal(result.findings[2].finalRisk, 'LOW');
+  const dOther = decision(result.findings[2], 'PF-006');
+  assert.ok(dOther);
+  assert.equal(dOther.action, 'DOWNGRADED');
+  assert.equal(dOther.afterRisk, 'LOW');
+  assert.match(dOther.reason, /[\u4e00-\u9fff]/);
+});
+
+test('PF-007 floors severe memory issues at HIGH and caps non-catastrophic CRITICAL', () => {
+  const uaf = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'MEMORY_SAFETY',
+        risk_level: 'MEDIUM',
+        title: '释放后使用',
+        description: '对象释放后仍被访问',
+        evidence: 'use-after-free: ptr->field after free(ptr)',
+        line_start: 3,
+        line_end: 3
+      })
+    ],
+    selectedFiles: [selected()],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.ok(['HIGH', 'CRITICAL'].includes(uaf.findings[0].finalRisk));
+  assert.notEqual(uaf.findings[0].finalRisk, 'MEDIUM');
+  assert.notEqual(uaf.findings[0].finalRisk, 'LOW');
+  const dFloor = decision(uaf.findings[0], 'PF-007');
+  assert.ok(dFloor);
+  assert.match(dFloor.reason, /[\u4e00-\u9fff]/);
+
+  const bounds = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'MEMORY_SAFETY',
+        risk_level: 'CRITICAL',
+        title: '数组越界',
+        description: '读取超出数组边界',
+        evidence: 'buf[i] 越界访问',
+        line_start: 3,
+        line_end: 3
+      })
+    ],
+    selectedFiles: [selected()],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.equal(bounds.findings[0].finalRisk, 'HIGH');
+  const dCap = decision(bounds.findings[0], 'PF-007');
+  assert.ok(dCap);
+  assert.equal(dCap.action, 'DOWNGRADED');
+  assert.equal(dCap.afterRisk, 'HIGH');
+  assert.match(dCap.reason, /[\u4e00-\u9fff]/);
+});
+
+test('PF-008 downgrades requirement mismatch without reference; keeps when acceptance violated', () => {
+  const missingRef = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'REQUIREMENT_MISMATCH',
+        risk_level: 'HIGH',
+        title: '需求不符',
+        description: '返回值不符合约定',
+        evidence: 'return 1',
+        requirement_reference: '',
+        line_start: 3,
+        line_end: 3
+      })
+    ],
+    selectedFiles: [selected()],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.equal(missingRef.findings[0].finalRisk, 'LOW');
+  const dMissing = decision(missingRef.findings[0], 'PF-008');
+  assert.ok(dMissing);
+  assert.equal(dMissing.action, 'DOWNGRADED');
+  assert.equal(dMissing.afterRisk, 'LOW');
+  assert.match(dMissing.reason, /[\u4e00-\u9fff]/);
+
+  const kept = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'REQUIREMENT_MISMATCH',
+        risk_level: 'HIGH',
+        title: '验收失败',
+        description: '违反验收：必须返回 0',
+        evidence: 'return 1',
+        requirement_reference: 'REQ-01',
+        line_start: 3,
+        line_end: 3
+      })
+    ],
+    selectedFiles: [selected()],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.ok(['MEDIUM', 'HIGH'].includes(kept.findings[0].finalRisk));
+  const dKept = decision(kept.findings[0], 'PF-008');
+  assert.ok(!dKept || dKept.action !== 'DOWNGRADED');
+});
+
+test('PF-009 merges duplicate findings by path, overlap, category, and title fingerprint', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'CORRECTNESS',
+        risk_level: 'MEDIUM',
+        title: '空 指针 解引用',
+        description: '主项描述',
+        evidence: 'p->x',
+        line_start: 2,
+        line_end: 4
+      }),
+      rawFinding({
+        category: 'CORRECTNESS',
+        risk_level: 'HIGH',
+        title: '空指针解引用',
+        description: '重复项描述',
+        evidence: 'p->y',
+        line_start: 3,
+        line_end: 5
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [2, 3, 4, 5], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  const primary = result.findings[0];
+  const merged = result.findings[1];
+  assert.notEqual(primary.status, 'MERGED');
+  assert.equal(merged.status, 'MERGED');
+  assert.equal(merged.findingId, 'F-002');
+  assert.equal(primary.finalRisk, 'HIGH');
+  const d = decision(merged, 'PF-009');
+  assert.ok(d);
+  assert.equal(d.action, 'MERGED');
+  assert.match(d.reason, /[\u4e00-\u9fff]/);
+});
+
+test('PF-010 recomputes overallRisk from active findings only', () => {
+  const mixed = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'CORRECTNESS',
+        risk_level: 'HIGH',
+        title: '逻辑错误 A',
+        description: '确定的逻辑错误',
+        evidence: 'return 1',
+        line_start: 3,
+        line_end: 3
+      }),
+      rawFinding({
+        file_path: 'src/other.cpp',
+        line_start: 1,
+        line_end: 1,
+        risk_level: 'CRITICAL',
+        title: '范围外'
+      }),
+      rawFinding({
+        category: 'CORRECTNESS',
+        risk_level: 'MEDIUM',
+        title: '逻辑错误 A',
+        description: '重复',
+        evidence: 'return 2',
+        line_start: 3,
+        line_end: 3
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  assert.equal(mixed.overallRisk, 'HIGH');
+  assert.equal(mixed.exemptedFindingCount, 1);
+  assert.equal(mixed.mergedFindingCount, 1);
+  assert.equal(mixed.activeFindingCount, 1);
+
+  const allExempt = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({ file_path: 'src/out.cpp', line_start: 1, line_end: 1, risk_level: 'CRITICAL' })
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+  assert.equal(allExempt.overallRisk, 'LOW');
+  assert.equal(allExempt.activeFindingCount, 0);
+  assert.equal(allExempt.exemptedFindingCount, 1);
+  assert.equal(allExempt.mergedFindingCount, 0);
+});

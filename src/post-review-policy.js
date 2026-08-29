@@ -11,10 +11,34 @@ const VALID_CATEGORIES = new Set([
   'OTHER'
 ]);
 const MID_HIGH_RISKS = new Set(['MEDIUM', 'HIGH', 'CRITICAL']);
+const RISK_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
 const SPECULATIVE_RE = /可能|也许|推测|假设|无法确认/;
 const UNKNOWN_INTERFACE_RE = /未知第三方接口|未知异步语义|旧版本升级路径|未提供的旧版本/;
 const CODE_EVIDENCE_RE = /->|::|\bnull\b|\bnullptr\b|\b[A-Za-z_]\w*\b/i;
 const CODE_SEMANTICS_RE = /未判空|解引用|越界|未初始化/;
+const PERF_EVIDENCE_RE = /复杂度|循环|热点|O\(|调用次数/;
+const CATASTROPHIC_RE =
+  /远程代码执行|RCE|鉴权绕过|认证绕过|不可恢复|数据破坏|大范围.*数据|任意代码执行/i;
+
+/**
+ * Severe floor (PF-007) requires category-aligned issue signals so unrelated
+ * findings are not re-raised after earlier downgrades (e.g. PF-003).
+ * @param {object} finding
+ * @returns {boolean}
+ */
+function isSevereFloorCandidate(finding) {
+  const blob = `${finding.title}\n${finding.description}\n${finding.evidence}`;
+  if (finding.category === 'MEMORY_SAFETY') {
+    return /未初始化|空指针|越界|use-after-free|重复释放/i.test(blob);
+  }
+  if (finding.category === 'CONCURRENCY') {
+    return /数据竞争|死锁/.test(blob);
+  }
+  if (finding.category === 'SECURITY') {
+    return /注入|进程退出|服务不可用/.test(blob);
+  }
+  return /进程退出|服务不可用/.test(blob);
+}
 
 /**
  * @param {number} index
@@ -47,6 +71,40 @@ function normalizeLine(value) {
  */
 function toPosixPath(filePath) {
   return String(filePath ?? '').replace(/\\/g, '/');
+}
+
+/**
+ * @param {string} title
+ * @returns {string}
+ */
+function normalizeTitleFingerprint(title) {
+  return String(title ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/\s+/g, '');
+}
+
+/**
+ * @param {object} a
+ * @param {object} b
+ * @returns {boolean}
+ */
+function lineRangesOverlap(a, b) {
+  if (a.lineStart === null || b.lineStart === null) return false;
+  const aStart = a.lineStart;
+  const aEnd = a.lineEnd ?? aStart;
+  const bStart = b.lineStart;
+  const bEnd = b.lineEnd ?? bStart;
+  return aStart <= bEnd && bStart <= aEnd;
+}
+
+/**
+ * @param {string} risk
+ * @param {string} other
+ * @returns {string}
+ */
+function maxRisk(risk, other) {
+  return RISK_RANK[risk] >= RISK_RANK[other] ? risk : other;
 }
 
 /**
@@ -108,8 +166,198 @@ function intersectsChangedLines(finding, selected) {
 }
 
 /**
+ * @param {object} finding
+ */
+function applyPf006(finding) {
+  if (finding.category === 'MAINTAINABILITY' && MID_HIGH_RISKS.has(finding.finalRisk)) {
+    const before = finding.finalRisk;
+    finding.finalRisk = 'LOW';
+    pushDecision(
+      finding,
+      'PF-006',
+      'DOWNGRADED',
+      before,
+      'LOW',
+      '可维护性问题默认最高为 LOW'
+    );
+    finding.status = 'DOWNGRADED';
+    return;
+  }
+
+  if (finding.category === 'PERFORMANCE' && MID_HIGH_RISKS.has(finding.finalRisk)) {
+    const text = `${finding.title}\n${finding.description}\n${finding.evidence}`;
+    if (!PERF_EVIDENCE_RE.test(text)) {
+      const before = finding.finalRisk;
+      finding.finalRisk = 'LOW';
+      pushDecision(
+        finding,
+        'PF-006',
+        'DOWNGRADED',
+        before,
+        'LOW',
+        '性能问题缺少复杂度、循环或热点类证据，最高为 LOW'
+      );
+      finding.status = 'DOWNGRADED';
+      return;
+    }
+  }
+
+  if (finding.category === 'OTHER' && MID_HIGH_RISKS.has(finding.finalRisk)) {
+    const before = finding.finalRisk;
+    finding.finalRisk = 'LOW';
+    pushDecision(
+      finding,
+      'PF-006',
+      'DOWNGRADED',
+      before,
+      'LOW',
+      'OTHER 类别不能保持中高风险'
+    );
+    finding.status = 'DOWNGRADED';
+  }
+}
+
+/**
+ * @param {object} finding
+ */
+function applyPf007(finding) {
+  const hasPreciseLocation = finding.lineStart !== null;
+  const blob = `${finding.title}\n${finding.description}\n${finding.evidence}`;
+  const hasDirectEvidence = String(finding.evidence ?? '').trim().length > 0;
+
+  if (
+    hasPreciseLocation &&
+    hasDirectEvidence &&
+    isSevereFloorCandidate(finding) &&
+    RISK_RANK[finding.finalRisk] < RISK_RANK.HIGH
+  ) {
+    const before = finding.finalRisk;
+    finding.finalRisk = 'HIGH';
+    pushDecision(
+      finding,
+      'PF-007',
+      'CORRECTED',
+      before,
+      'HIGH',
+      '具备准确位置与明确证据的严重问题，最终风险不低于 HIGH'
+    );
+    finding.status = 'CORRECTED';
+  }
+
+  if (finding.finalRisk === 'CRITICAL') {
+    const catastrophic = CATASTROPHIC_RE.test(blob);
+    if (!(catastrophic && hasPreciseLocation && hasDirectEvidence)) {
+      const before = finding.finalRisk;
+      finding.finalRisk = 'HIGH';
+      pushDecision(
+        finding,
+        'PF-007',
+        'DOWNGRADED',
+        before,
+        'HIGH',
+        'CRITICAL 须同时满足灾难性影响、准确位置与直接证据，否则最高为 HIGH'
+      );
+      finding.status = 'DOWNGRADED';
+    }
+  }
+}
+
+/**
+ * @param {object} finding
+ */
+function applyPf008(finding) {
+  if (finding.category !== 'REQUIREMENT_MISMATCH') return;
+
+  const hasRef = String(finding.requirementReference ?? '').trim().length > 0;
+  const hasLocation = finding.lineStart !== null;
+
+  if ((!hasRef || !hasLocation) && MID_HIGH_RISKS.has(finding.finalRisk)) {
+    const before = finding.finalRisk;
+    finding.finalRisk = 'LOW';
+    pushDecision(
+      finding,
+      'PF-008',
+      'DOWNGRADED',
+      before,
+      'LOW',
+      '需求不符合类问题缺少 requirement_reference 或代码位置，降至 LOW'
+    );
+    finding.status = 'DOWNGRADED';
+  }
+}
+
+/**
+ * @param {object[]} findings
+ */
+function applyPf009(findings) {
+  for (let i = 0; i < findings.length; i++) {
+    const current = findings[i];
+    if (current.status === 'EXEMPTED' || current.status === 'MERGED') continue;
+
+    for (let j = 0; j < i; j++) {
+      const primary = findings[j];
+      if (primary.status === 'EXEMPTED' || primary.status === 'MERGED') continue;
+      if (primary.filePath !== current.filePath) continue;
+      if (primary.category !== current.category) continue;
+      if (normalizeTitleFingerprint(primary.title) !== normalizeTitleFingerprint(current.title)) {
+        continue;
+      }
+      if (!lineRangesOverlap(primary, current)) continue;
+
+      const before = current.finalRisk;
+      const mergedRisk = maxRisk(primary.finalRisk, current.finalRisk);
+      if (RISK_RANK[mergedRisk] > RISK_RANK[primary.finalRisk]) {
+        primary.finalRisk = mergedRisk;
+      }
+      if (current.evidence && !primary.evidence.includes(current.evidence)) {
+        primary.evidence = primary.evidence
+          ? `${primary.evidence}\n${current.evidence}`
+          : current.evidence;
+      }
+
+      current.status = 'MERGED';
+      pushDecision(
+        current,
+        'PF-009',
+        'MERGED',
+        before,
+        current.finalRisk,
+        '与已有 Finding 在路径、行号、类别与标题上重复，合并为从项'
+      );
+      break;
+    }
+  }
+}
+
+/**
+ * @param {object[]} findings
+ * @returns {{ overallRisk: string, activeFindingCount: number, exemptedFindingCount: number, mergedFindingCount: number }}
+ */
+function applyPf010(findings) {
+  let overallRisk = 'LOW';
+  let activeFindingCount = 0;
+  let exemptedFindingCount = 0;
+  let mergedFindingCount = 0;
+
+  for (const f of findings) {
+    if (f.status === 'EXEMPTED') {
+      exemptedFindingCount += 1;
+      continue;
+    }
+    if (f.status === 'MERGED') {
+      mergedFindingCount += 1;
+      continue;
+    }
+    activeFindingCount += 1;
+    overallRisk = maxRisk(overallRisk, f.finalRisk);
+  }
+
+  return { overallRisk, activeFindingCount, exemptedFindingCount, mergedFindingCount };
+}
+
+/**
  * @param {{ rawFindings: object[], selectedFiles: object[], sourceMode: string }} input
- * @returns {{ findings: object[] }}
+ * @returns {{ findings: object[], overallRisk: string, activeFindingCount: number, exemptedFindingCount: number, mergedFindingCount: number }}
  */
 export function applyPostReviewPolicy({ rawFindings, selectedFiles, sourceMode }) {
   const selectedByPath = new Map(
@@ -281,8 +529,23 @@ export function applyPostReviewPolicy({ rawFindings, selectedFiles, sourceMode }
       return finding;
     }
 
+    // PF-006 设计、风格与性能
+    applyPf006(finding);
+
+    // PF-007 严重风险修正
+    applyPf007(finding);
+
+    // PF-008 需求不符合
+    applyPf008(finding);
+
     return finding;
   });
 
-  return { findings };
+  // PF-009 重复问题
+  applyPf009(findings);
+
+  // PF-010 最终风险重算
+  const aggregates = applyPf010(findings);
+
+  return { findings, ...aggregates };
 }
