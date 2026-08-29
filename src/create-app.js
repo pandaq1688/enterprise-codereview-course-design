@@ -5,6 +5,7 @@ import { createSystemClock } from './shared/clock.js';
 import { createLogger } from './shared/logger.js';
 import { createFileReportRepository } from './file-report-repository.js';
 import { createReviewJobService } from './review-job-service.js';
+import { createReviewScheduler } from './review-scheduler.js';
 import { validateCreateReviewRequest } from './request-validator.js';
 import { collectGitChangedSource } from './git-changed-source-collector.js';
 import { collectFullDirectorySource } from './full-directory-source-collector.js';
@@ -126,7 +127,29 @@ export async function createApp(overrides = {}) {
       validateRequest
     });
 
+  const schedulerProfiles = Array.isArray(config.scheduler?.profiles)
+    ? config.scheduler.profiles
+    : [];
+  const schedulerStateFile = path.resolve(
+    config.scheduler?.stateFile ?? './data/scheduler-state.json'
+  );
+
+  /** @type {ReturnType<typeof createReviewScheduler> | null} */
+  let scheduler = null;
+  if (schedulerProfiles.length > 0) {
+    scheduler = createReviewScheduler({
+      profiles: schedulerProfiles,
+      jobService,
+      clock,
+      stateFile: schedulerStateFile,
+      computeInputHash: (normalizedRequest) => jobService.computeInputHashFor(normalizedRequest),
+      logger
+    });
+  }
+
   let listening = false;
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let schedulerTimer = null;
 
   async function start() {
     if (listening) return;
@@ -136,9 +159,25 @@ export async function createApp(overrides = {}) {
       server.listen(port, host, (err) => (err ? reject(err) : resolve()));
     });
     listening = true;
+
+    if (scheduler && schedulerTimer == null) {
+      schedulerTimer = setInterval(() => {
+        void scheduler.tick().catch((err) => {
+          logger.log({
+            level: 'error',
+            event: 'SCHEDULER_TICK_FAILED',
+            message: err instanceof Error ? err.message : String(err)
+          });
+        });
+      }, 30_000);
+    }
   }
 
   async function stop({ waitMs = 30_000 } = {}) {
+    if (schedulerTimer != null) {
+      clearInterval(schedulerTimer);
+      schedulerTimer = null;
+    }
     if (typeof jobService.pauseAccepting === 'function') {
       jobService.pauseAccepting();
     }
@@ -153,5 +192,5 @@ export async function createApp(overrides = {}) {
     }
   }
 
-  return { server, jobService, config: resolvedConfig, start, stop };
+  return { server, jobService, config: resolvedConfig, scheduler, start, stop };
 }
