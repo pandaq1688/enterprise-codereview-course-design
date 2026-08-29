@@ -90,3 +90,56 @@ node --test tests/**/*.test.js
 ```
 c9d5368 feat: add realpath-based allowedRoots path security
 ```
+
+---
+
+## Fix Report (review follow-up)
+
+### Findings addressed
+
+1. **`PATH_SYMLINK_ESCAPE` branch never exercised** — Fixed symlink integration test to pass original lexical `link` as third argument and assert only `PATH_SYMLINK_ESCAPE`. Added deterministic unit test `assertInsideAllowedRoots uses PATH_SYMLINK_ESCAPE when lexical path is inside but realpath is outside` that constructs mismatched `realPath`/`lexicalPath` without requiring symlink creation (runs on Windows).
+
+2. **Guard paths untested** — Added `assertInsideAllowedRoots rejects empty allowedRoots with INVALID_REQUEST` and `resolveRealPath throws PATH_NOT_FOUND for a missing path`.
+
+### What changed
+
+| File | Change |
+|------|--------|
+| `tests/path-security.test.js` | +3 new tests; symlink test now passes lexical `link` and asserts `PATH_SYMLINK_ESCAPE` only; removed redundant dynamic imports |
+| `src/shared/path-security.js` | No change — existing implementation already correct |
+
+### TDD
+
+New tests written first. All passed on first run (GREEN without production edits) — behavior was already implemented but uncovered.
+
+### Covering tests run
+
+**Command:**
+```
+node --test tests/path-security.test.js
+```
+
+**Output:**
+```
+✔ assertInsideAllowedRoots allows a realpath under an allowed root (7.821ms)
+✔ assertInsideAllowedRoots rejects a sibling that only shares a string prefix (3.9053ms)
+✔ toPosixRelative returns forward-slash paths (4.1133ms)
+✔ assertInsideAllowedRoots rejects empty allowedRoots with INVALID_REQUEST (1.213ms)
+✔ resolveRealPath throws PATH_NOT_FOUND for a missing path (1.6153ms)
+✔ assertInsideAllowedRoots uses PATH_SYMLINK_ESCAPE when lexical path is inside but realpath is outside (3.1895ms)
+﹣ symlink whose realpath leaves allowedRoots is PATH_SYMLINK_ESCAPE (2.2441ms) # symlink not permitted on this machine
+ℹ tests 7
+ℹ pass 6
+ℹ fail 0
+ℹ skipped 1
+```
+
+### Remaining concern
+
+Symlink integration test still skipped on this machine (no symlink privilege). The deterministic unit test now exercises the `PATH_SYMLINK_ESCAPE` branch on all platforms.
+
+### Commit
+
+```
+cd582a0 test: cover PATH_SYMLINK_ESCAPE branch and guard paths
+```
