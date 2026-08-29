@@ -168,6 +168,9 @@ test('invalid AI JSON yields FAILED with AI_OUTPUT_INVALID_JSON and empty findin
   });
   const job = await waitUntilDone(service, reviewId);
   assert.equal(job.status, 'FAILED');
+  // In-memory getJob must expose errors[0] (not only repository fallback)
+  assert.ok(job.error, 'getJob must set error for in-memory FAILED jobs');
+  assert.equal(job.error.code, 'AI_OUTPUT_INVALID_JSON');
 
   const report = await service.getReport(reviewId);
   assert.equal(report.status, 'FAILED');

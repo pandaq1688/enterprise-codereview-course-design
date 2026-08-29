@@ -260,6 +260,13 @@ export function createReviewJobService(deps) {
       setStatus(job, status);
       job.completedAt = report.completedAt;
       job.durationMs = report.durationMs;
+      if (status === 'FAILED' && Array.isArray(errors) && errors.length > 0) {
+        job.error = {
+          code: errors[0].code,
+          message: errors[0].message,
+          details: errors[0].details ?? []
+        };
+      }
       return report;
     } catch (err) {
       setStatus(job, 'FAILED');
