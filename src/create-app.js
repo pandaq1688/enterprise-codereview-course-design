@@ -14,7 +14,44 @@ import { buildPrompt } from './prompt-builder.js';
 import { parseReviewOutput } from './review-result-parser.js';
 import { applyPostReviewPolicy } from './post-review-policy.js';
 import { createCursorReviewProvider } from './providers/cursor-review-provider.js';
+import { createRemoteLlmReviewProvider } from './providers/remote-llm-review-provider.js';
 import { createWebAdapter } from './web/web-adapter.js';
+
+/**
+ * @param {object} config
+ */
+function assertRemoteApiKeyPresent(config) {
+  if (config.ai?.provider !== 'remote') return;
+  const envName = config.ai?.remote?.apiKeyEnv;
+  if (!envName || typeof envName !== 'string') {
+    throw new Error('远程大模型未配置 apiKeyEnv 环境变量名');
+  }
+  if (!process.env[envName]) {
+    throw new Error(`远程大模型 API Key 环境变量未设置: ${envName}`);
+  }
+}
+
+/**
+ * @param {object} config
+ */
+function createConfiguredProvider(config) {
+  if (config.ai?.provider === 'remote') {
+    assertRemoteApiKeyPresent(config);
+    const remote = config.ai.remote;
+    return createRemoteLlmReviewProvider({
+      baseUrl: remote.baseUrl,
+      model: remote.model,
+      apiKeyEnv: remote.apiKeyEnv,
+      timeoutMs: remote.timeoutMs
+    });
+  }
+  return createCursorReviewProvider({
+    command: config.cursor.command,
+    args: config.cursor.args,
+    timeoutMs: config.cursor.timeoutMs,
+    maxOutputChars: config.cursor.maxOutputChars
+  });
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG_PATH = path.resolve(__dirname, '..', 'app.config.json');
@@ -46,14 +83,11 @@ export async function createApp(overrides = {}) {
       ...(overrides.idFactory ? { idFactory: overrides.idFactory } : {})
     });
 
-  const provider =
-    overrides.provider ??
-    createCursorReviewProvider({
-      command: config.cursor.command,
-      args: config.cursor.args,
-      timeoutMs: config.cursor.timeoutMs,
-      maxOutputChars: config.cursor.maxOutputChars
-    });
+  if (!overrides.provider) {
+    assertRemoteApiKeyPresent(config);
+  }
+
+  const provider = overrides.provider ?? createConfiguredProvider(config);
 
   const ruleResolver =
     overrides.ruleResolver ??

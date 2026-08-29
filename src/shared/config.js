@@ -128,5 +128,15 @@ export async function loadConfig(configPath) {
     throw new Error('cursor.args 必须是数组');
   }
 
+  if (merged.ai?.provider === 'remote') {
+    const envName = merged.ai?.remote?.apiKeyEnv;
+    if (!envName || typeof envName !== 'string') {
+      throw new Error('远程大模型未配置 apiKeyEnv 环境变量名');
+    }
+    if (!process.env[envName]) {
+      throw new Error(`远程大模型 API Key 环境变量未设置: ${envName}`);
+    }
+  }
+
   return merged;
 }
