@@ -27,4 +27,4 @@ npm test
 ```
 
 ## Commits
-(filled after commit)
+- `6398ef3` — fix: route provider timeouts, PF-009 primary audit, INTERNAL_ERROR mapping
