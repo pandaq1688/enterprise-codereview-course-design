@@ -383,3 +383,58 @@ test('tick failure is logged and does not throw', async () => {
     })
   );
 });
+
+test('overlapping concurrent ticks enqueue at most once (tick mutex)', async () => {
+  const stateFile = path.join(await makeTempDir('crs-sched-mutex-'), 'scheduler-state.json');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  const clock = createFakeClock(0);
+
+  let enqueueCount = 0;
+  let hashCalls = 0;
+  let resolveFirstHash;
+  const firstHashEntered = new Promise((resolve) => {
+    resolveFirstHash = resolve;
+  });
+  let releaseHash;
+  const hashGate = new Promise((resolve) => {
+    releaseHash = resolve;
+  });
+
+  const jobService = {
+    enqueue() {
+      enqueueCount += 1;
+      return { reviewId: `mutex-${enqueueCount}`, status: 'QUEUED' };
+    },
+    getJob: async () => ({ status: 'QUEUED' }),
+    getReport: async () => null
+  };
+
+  const scheduler = createReviewScheduler({
+    profiles: [makeProfile({ projectDir, requirementFile })],
+    jobService,
+    clock,
+    stateFile,
+    computeInputHash: async () => {
+      hashCalls += 1;
+      if (hashCalls === 1) {
+        resolveFirstHash();
+      }
+      await hashGate;
+      return 'slow-hash';
+    },
+    logger: createLogger({ stream: { write() {} }, clock })
+  });
+
+  clock.advance(INTERVAL_MS);
+
+  const t1 = scheduler.tick();
+  await firstHashEntered;
+  const t2 = scheduler.tick();
+  // Allow a non-mutex second tick time to also enter computeInputHash before release
+  await new Promise((r) => setTimeout(r, 50));
+  releaseHash();
+  await Promise.all([t1, t2]);
+
+  assert.equal(enqueueCount, 1, 'second overlapping tick must not double-enqueue');
+  assert.equal(hashCalls, 1, 'overlapping tick must not re-enter hash computation');
+});

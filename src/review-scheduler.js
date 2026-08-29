@@ -131,6 +131,8 @@ export function createReviewScheduler(deps) {
   const inFlight = new Map();
   /** @type {Map<string, number>} */
   const nextRunCache = new Map();
+  /** Prevent overlapping tick() reentrancy (e.g. slow hash vs 30s interval). */
+  let tickRunning = false;
 
   function log(entry) {
     if (logger && typeof logger.log === 'function') {
@@ -275,6 +277,10 @@ export function createReviewScheduler(deps) {
   }
 
   async function tick() {
+    if (tickRunning) {
+      return;
+    }
+    tickRunning = true;
     try {
       const state = await readState(stateFile);
       refreshNextRunCache(state);
@@ -300,6 +306,8 @@ export function createReviewScheduler(deps) {
         event: 'SCHEDULER_TICK_FAILED',
         message: err instanceof Error ? err.message : String(err)
       });
+    } finally {
+      tickRunning = false;
     }
   }
 
