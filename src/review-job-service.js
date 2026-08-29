@@ -54,10 +54,21 @@ function toErrorEntry(err) {
     return { code: err.code, message: err.message, details: err.details ?? [] };
   }
   return {
-    code: ErrorCodes.INVALID_REQUEST,
-    message: err instanceof Error ? err.message : String(err),
+    code: ErrorCodes.INTERNAL_ERROR,
+    message: '服务器内部错误',
     details: []
   };
+}
+
+/**
+ * @param {object} config
+ * @returns {number | undefined}
+ */
+function resolveReviewTimeoutMs(config) {
+  if (config?.ai?.provider === 'remote') {
+    return config.ai?.remote?.timeoutMs;
+  }
+  return config?.cursor?.timeoutMs;
 }
 
 /**
@@ -334,7 +345,7 @@ export function createReviewJobService(deps) {
           projectDir: job.request.projectDir,
           promptFile,
           outputFile,
-          timeoutMs: config.cursor?.timeoutMs,
+          timeoutMs: resolveReviewTimeoutMs(config),
           signal: currentAbort.signal
         });
       } catch (err) {

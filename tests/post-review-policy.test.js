@@ -505,6 +505,47 @@ test('PF-009 merges duplicate findings by path, overlap, category, and title fin
   assert.ok(d);
   assert.equal(d.action, 'MERGED');
   assert.match(d.reason, /[\u4e00-\u9fff]/);
+  const primaryPf009 = decision(primary, 'PF-009');
+  assert.ok(primaryPf009, 'primary risk bump must leave a PF-009 audit decision');
+  assert.equal(primaryPf009.beforeRisk, 'MEDIUM');
+  assert.equal(primaryPf009.afterRisk, 'HIGH');
+  assert.match(primaryPf009.reason, /[\u4e00-\u9fff]/);
+});
+
+test('PF-009 primary risk bump re-applies legality caps (does not undo PF-008)', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        category: 'REQUIREMENT_MISMATCH',
+        risk_level: 'HIGH',
+        title: '需求不符重复',
+        description: '主项缺少需求引用',
+        evidence: 'return 1',
+        requirement_reference: '',
+        line_start: 2,
+        line_end: 4
+      }),
+      rawFinding({
+        category: 'REQUIREMENT_MISMATCH',
+        risk_level: 'HIGH',
+        title: '需求不符重复',
+        description: '从项有需求引用',
+        evidence: 'return 2',
+        requirement_reference: 'REQ-01',
+        line_start: 3,
+        line_end: 5
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [2, 3, 4, 5], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  const primary = result.findings[0];
+  const merged = result.findings[1];
+  assert.equal(merged.status, 'MERGED');
+  assert.equal(primary.finalRisk, 'LOW', 'merge must not leave primary above legal PF-008 cap');
+  assert.ok(primary.decisions.some((d) => d.policyId === 'PF-009'));
+  assert.ok(primary.decisions.some((d) => d.policyId === 'PF-008' && d.action === 'DOWNGRADED'));
 });
 
 test('PF-010 recomputes overallRisk from active findings only', () => {

@@ -88,14 +88,14 @@ function defaultConfig(reportsDir) {
   };
 }
 
-function createService({ reportsDir, provider, idFactory, clock }) {
+function createService({ reportsDir, provider, idFactory, clock, config }) {
   const repository = createFileReportRepository({ reportsDir, idFactory });
   const logger = createLogger({
     stream: { write() {} },
     clock: clock ?? createSystemClock()
   });
   return createReviewJobService({
-    config: defaultConfig(reportsDir),
+    config: config ?? defaultConfig(reportsDir),
     gitChangedCollector: collectGitChangedSource,
     fullDirectoryCollector: collectFullDirectorySource,
     requirementLoader: loadRequirement,
@@ -215,4 +215,104 @@ test('processes only one review at a time (concurrency 1)', async () => {
   await waitUntilDone(service, a.reviewId);
   await waitUntilDone(service, b.reviewId);
   assert.equal(overlap, false);
+});
+
+test('provider=remote uses ai.remote.timeoutMs not cursor.timeoutMs', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  /** @type {number | undefined} */
+  let seenTimeout;
+  const base = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const provider = {
+    async review(args) {
+      seenTimeout = args.timeoutMs;
+      return base.review(args);
+    }
+  };
+  const config = {
+    ...defaultConfig(reportsDir),
+    cursor: { timeoutMs: 111_111, maxOutputChars: 2000000 },
+    ai: {
+      provider: 'remote',
+      remote: { timeoutMs: 222_222 }
+    }
+  };
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `to-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  await waitUntilDone(service, reviewId);
+  assert.equal(seenTimeout, 222_222);
+});
+
+test('provider=cursor uses cursor.timeoutMs', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  /** @type {number | undefined} */
+  let seenTimeout;
+  const base = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const provider = {
+    async review(args) {
+      seenTimeout = args.timeoutMs;
+      return base.review(args);
+    }
+  };
+  const config = {
+    ...defaultConfig(reportsDir),
+    cursor: { timeoutMs: 333_333, maxOutputChars: 2000000 },
+    ai: {
+      provider: 'cursor',
+      remote: { timeoutMs: 444_444 }
+    }
+  };
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `toc-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  await waitUntilDone(service, reviewId);
+  assert.equal(seenTimeout, 333_333);
+});
+
+test('unexpected non-AppError failures map to INTERNAL_ERROR with generic Chinese message', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = {
+    async review() {
+      throw new Error('secret internal stacktrace xyz');
+    }
+  };
+  const service = createService({
+    reportsDir,
+    provider,
+    idFactory: () => `ie-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'FAILED');
+  assert.equal(job.error.code, 'INTERNAL_ERROR');
+  assert.match(job.error.message, /[\u4e00-\u9fff]/);
+  assert.ok(!job.error.message.includes('secret'));
+  assert.ok(!job.error.message.includes('stacktrace'));
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.errors[0].code, 'INTERNAL_ERROR');
+  assert.ok(!report.errors[0].message.includes('secret'));
 });

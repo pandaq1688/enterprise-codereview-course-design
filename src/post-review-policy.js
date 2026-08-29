@@ -314,15 +314,29 @@ function applyPf009(findings) {
       if (!lineRangesOverlap(primary, current)) continue;
 
       const before = current.finalRisk;
+      const beforePrimary = primary.finalRisk;
       const mergedRisk = maxRisk(primary.finalRisk, current.finalRisk);
       if (RISK_RANK[mergedRisk] > RISK_RANK[primary.finalRisk]) {
         primary.finalRisk = mergedRisk;
+        pushDecision(
+          primary,
+          'PF-009',
+          'CORRECTED',
+          beforePrimary,
+          mergedRisk,
+          '合并重复 Finding 后采用更高最终风险'
+        );
       }
       if (current.evidence && !primary.evidence.includes(current.evidence)) {
         primary.evidence = primary.evidence
           ? `${primary.evidence}\n${current.evidence}`
           : current.evidence;
       }
+
+      // Re-apply legality caps so a merge cannot undo earlier downgrades.
+      applyPf006(primary);
+      applyPf007(primary);
+      applyPf008(primary);
 
       current.status = 'MERGED';
       pushDecision(
