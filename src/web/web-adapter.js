@@ -5,6 +5,38 @@ import { AppError } from '../shared/app-error.js';
 import { ErrorCodes } from '../shared/error-codes.js';
 import { renderHomePage, renderJobPage, renderReportPage } from './templates.js';
 
+/** crypto.randomUUID() shape */
+const REVIEW_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * @param {unknown} reviewId
+ * @returns {boolean}
+ */
+export function isValidReviewId(reviewId) {
+  return typeof reviewId === 'string' && REVIEW_ID_RE.test(reviewId);
+}
+
+/**
+ * Resolve a report artifact path and ensure it stays under reportsDir.
+ * @param {string} reportsDir
+ * @param {string} reviewId
+ * @param {'report.html'|'report.json'} fileName
+ * @returns {string|null}
+ */
+export function resolveReportArtifactPath(reportsDir, reviewId, fileName) {
+  if (!isValidReviewId(reviewId)) return null;
+  if (fileName !== 'report.html' && fileName !== 'report.json') return null;
+
+  const root = path.resolve(reportsDir);
+  const resolved = path.resolve(root, reviewId, fileName);
+  const relative = path.relative(root, resolved);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return null;
+  }
+  return resolved;
+}
+
 /**
  * @param {import('node:http').IncomingMessage} req
  * @returns {Promise<string>}
@@ -111,6 +143,20 @@ function sendAppError(res, err) {
 }
 
 /**
+ * @param {import('node:http').ServerResponse} res
+ * @param {string} message
+ */
+function sendNotFound(res, message) {
+  sendJson(res, 404, {
+    error: {
+      code: ErrorCodes.PATH_NOT_FOUND,
+      message,
+      details: []
+    }
+  });
+}
+
+/**
  * @param {string} pathname
  * @param {string} pattern
  * @returns {string[]|null}
@@ -130,6 +176,27 @@ function matchPath(pathname, pattern) {
     }
   }
   return params;
+}
+
+/**
+ * @param {string} reportsDir
+ * @param {string} reviewId
+ * @param {'report.html'|'report.json'} fileName
+ * @param {import('node:http').ServerResponse} res
+ * @param {string} contentType
+ */
+async function serveReportArtifact(reportsDir, reviewId, fileName, res, contentType) {
+  const filePath = resolveReportArtifactPath(reportsDir, reviewId, fileName);
+  if (!filePath) {
+    return sendNotFound(res, '报告文件不存在');
+  }
+  try {
+    const text = await fs.readFile(filePath, 'utf8');
+    res.writeHead(200, { 'Content-Type': contentType });
+    res.end(text);
+  } catch {
+    return sendNotFound(res, '报告文件不存在');
+  }
 }
 
 /**
@@ -161,6 +228,9 @@ export function createWebAdapter({ jobService, config, validateRequest }) {
       {
         const m = matchPath(pathname, '/jobs/:id');
         if (method === 'GET' && m) {
+          if (!isValidReviewId(m[0])) {
+            return sendNotFound(res, '任务不存在');
+          }
           return sendHtml(res, 200, renderJobPage({ reviewId: m[0] }));
         }
       }
@@ -168,59 +238,40 @@ export function createWebAdapter({ jobService, config, validateRequest }) {
       {
         const m = matchPath(pathname, '/reports/:id/report.html');
         if (method === 'GET' && m) {
-          const filePath = path.join(reportsDir, m[0], 'report.html');
-          try {
-            const text = await fs.readFile(filePath, 'utf8');
-            res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-            res.end(text);
-            return;
-          } catch {
-            return sendJson(res, 404, {
-              error: {
-                code: ErrorCodes.PATH_NOT_FOUND,
-                message: '报告文件不存在',
-                details: []
-              }
-            });
-          }
+          return serveReportArtifact(
+            reportsDir,
+            m[0],
+            'report.html',
+            res,
+            'text/html; charset=utf-8'
+          );
         }
       }
 
       {
         const m = matchPath(pathname, '/reports/:id/report.json');
         if (method === 'GET' && m) {
-          const filePath = path.join(reportsDir, m[0], 'report.json');
-          try {
-            const text = await fs.readFile(filePath, 'utf8');
-            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(text);
-            return;
-          } catch {
-            return sendJson(res, 404, {
-              error: {
-                code: ErrorCodes.PATH_NOT_FOUND,
-                message: '报告文件不存在',
-                details: []
-              }
-            });
-          }
+          return serveReportArtifact(
+            reportsDir,
+            m[0],
+            'report.json',
+            res,
+            'application/json; charset=utf-8'
+          );
         }
       }
 
       {
         const m = matchPath(pathname, '/reports/:id');
         if (method === 'GET' && m) {
+          if (!isValidReviewId(m[0])) {
+            return sendNotFound(res, '报告不存在');
+          }
           try {
             const report = await jobService.getReport(m[0]);
             return sendHtml(res, 200, renderReportPage(report));
           } catch {
-            return sendJson(res, 404, {
-              error: {
-                code: ErrorCodes.PATH_NOT_FOUND,
-                message: '报告不存在',
-                details: []
-              }
-            });
+            return sendNotFound(res, '报告不存在');
           }
         }
       }
@@ -236,15 +287,12 @@ export function createWebAdapter({ jobService, config, validateRequest }) {
       {
         const m = matchPath(pathname, '/api/jobs/:id');
         if (method === 'GET' && m) {
+          if (!isValidReviewId(m[0])) {
+            return sendNotFound(res, '任务不存在');
+          }
           const job = await jobService.getJob(m[0]);
           if (!job) {
-            return sendJson(res, 404, {
-              error: {
-                code: ErrorCodes.PATH_NOT_FOUND,
-                message: '任务不存在',
-                details: []
-              }
-            });
+            return sendNotFound(res, '任务不存在');
           }
           return sendJson(res, 200, job);
         }
@@ -258,17 +306,14 @@ export function createWebAdapter({ jobService, config, validateRequest }) {
       {
         const m = matchPath(pathname, '/api/reports/:id');
         if (method === 'GET' && m) {
+          if (!isValidReviewId(m[0])) {
+            return sendNotFound(res, '报告不存在');
+          }
           try {
             const report = await jobService.getReport(m[0]);
             return sendJson(res, 200, report);
           } catch {
-            return sendJson(res, 404, {
-              error: {
-                code: ErrorCodes.PATH_NOT_FOUND,
-                message: '报告不存在',
-                details: []
-              }
-            });
+            return sendNotFound(res, '报告不存在');
           }
         }
       }
@@ -286,21 +331,15 @@ export function createWebAdapter({ jobService, config, validateRequest }) {
         });
       }
 
-      return sendJson(res, 404, {
-        error: {
-          code: ErrorCodes.PATH_NOT_FOUND,
-          message: '未找到路由',
-          details: []
-        }
-      });
+      return sendNotFound(res, '未找到路由');
     } catch (err) {
       if (err instanceof AppError) {
         return sendAppError(res, err);
       }
       return sendJson(res, 500, {
         error: {
-          code: ErrorCodes.INVALID_REQUEST,
-          message: err instanceof Error ? err.message : String(err),
+          code: ErrorCodes.INTERNAL_ERROR,
+          message: '服务器内部错误',
           details: []
         }
       });

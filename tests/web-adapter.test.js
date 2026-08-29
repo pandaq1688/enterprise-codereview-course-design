@@ -102,7 +102,18 @@ function makeConfig(root, reportsDir) {
   };
 }
 
-function makeFakeJobService({ reviewId = 'fixed-review-id' } = {}) {
+const IDS = Object.freeze({
+  fixed: '11111111-1111-4111-8111-111111111111',
+  hist: '22222222-2222-4222-8222-222222222222',
+  poll: '33333333-3333-4333-8333-333333333333',
+  jobApi: '44444444-4444-4444-8444-444444444444',
+  rep: '55555555-5555-4555-8555-555555555555',
+  webRep: '66666666-6666-4666-8666-666666666666',
+  form: '77777777-7777-4777-8777-777777777777',
+  health: '88888888-8888-4888-8888-888888888888'
+});
+
+function makeFakeJobService({ reviewId = IDS.fixed } = {}) {
   /** @type {Map<string, object>} */
   const jobs = new Map();
   /** @type {object[]} */
@@ -202,7 +213,7 @@ test('POST /api/reviews with invalid body returns 400 INVALID_REQUEST', async ()
 test('POST /api/reviews with valid body returns 202 QUEUED', async () => {
   const { root, projectDir, requirementFile } = await setupAllowedProject();
   const reportsDir = await makeTempDir('crs-web-reports-');
-  const jobService = makeFakeJobService({ reviewId: 'fixed-review-id' });
+  const jobService = makeFakeJobService({ reviewId: IDS.fixed });
   const server = createWebAdapter({
     jobService,
     config: makeConfig(root, reportsDir),
@@ -219,7 +230,7 @@ test('POST /api/reviews with valid body returns 202 QUEUED', async () => {
     });
     assert.equal(res.statusCode, 202);
     const json = JSON.parse(res.body);
-    assert.deepEqual(json, { reviewId: 'fixed-review-id', status: 'QUEUED' });
+    assert.deepEqual(json, { reviewId: IDS.fixed, status: 'QUEUED' });
   } finally {
     await close(server);
   }
@@ -232,7 +243,7 @@ test('GET /api/health has status fields and omits secrets', async () => {
   jobService._setHealth({
     accepting: true,
     queueLength: 2,
-    currentReviewId: 'job-1'
+    currentReviewId: IDS.health
   });
   const config = makeConfig(root, reportsDir);
   config.security.allowedRoots = [root, path.join(root, 'secret-root')];
@@ -248,7 +259,7 @@ test('GET /api/health has status fields and omits secrets', async () => {
     const json = JSON.parse(res.body);
     assert.equal(json.status, 'ok');
     assert.equal(json.queueLength, 2);
-    assert.equal(json.currentReviewId, 'job-1');
+    assert.equal(json.currentReviewId, IDS.health);
     assert.equal(json.accepting, true);
     const raw = res.body;
     assert.equal(raw.includes('allowedRoots'), false);
@@ -266,7 +277,7 @@ test('GET / serves form with §13.3 field names and history table', async () => 
   const reportsDir = await makeTempDir('crs-web-reports-');
   const jobService = makeFakeJobService();
   jobService._addReport({
-    reviewId: 'hist-1',
+    reviewId: IDS.hist,
     createdAt: '2026-01-02T00:00:00.000Z',
     status: 'SUCCEEDED',
     durationMs: 10,
@@ -294,7 +305,7 @@ test('GET / serves form with §13.3 field names and history table', async () => 
     assert.match(res.body, /name="checklist\.path"/);
     assert.match(res.body, /name="checklist\.includePaths"/);
     assert.match(res.body, /demo&lt;script&gt;/);
-    assert.match(res.body, /hist-1/);
+    assert.match(res.body, new RegExp(IDS.hist));
   } finally {
     await close(server);
   }
@@ -303,7 +314,7 @@ test('GET / serves form with §13.3 field names and history table', async () => 
 test('GET /jobs/:id page polls /api/jobs/:id', async () => {
   const { root } = await setupAllowedProject();
   const reportsDir = await makeTempDir('crs-web-reports-');
-  const jobService = makeFakeJobService({ reviewId: 'poll-me' });
+  const jobService = makeFakeJobService({ reviewId: IDS.poll });
   jobService.enqueue(
     { projectName: 'x', projectDir: root, requirementFile: root, sourceMode: 'FULL_DIRECTORY' },
     { triggerType: 'MANUAL' }
@@ -315,10 +326,10 @@ test('GET /jobs/:id page polls /api/jobs/:id', async () => {
   });
   await listen(server);
   try {
-    const res = await request(server, 'GET', '/jobs/poll-me');
+    const res = await request(server, 'GET', `/jobs/${IDS.poll}`);
     assert.equal(res.statusCode, 200);
-    assert.match(res.body, /\/api\/jobs\/poll-me/);
-    assert.match(res.body, /poll-me/);
+    assert.match(res.body, new RegExp(`/api/jobs/${IDS.poll}`));
+    assert.match(res.body, new RegExp(IDS.poll));
   } finally {
     await close(server);
   }
@@ -327,7 +338,7 @@ test('GET /jobs/:id page polls /api/jobs/:id', async () => {
 test('GET /api/jobs/:id returns job status', async () => {
   const { root } = await setupAllowedProject();
   const reportsDir = await makeTempDir('crs-web-reports-');
-  const jobService = makeFakeJobService({ reviewId: 'job-api' });
+  const jobService = makeFakeJobService({ reviewId: IDS.jobApi });
   jobService.enqueue(
     { projectName: 'x', projectDir: root, requirementFile: root, sourceMode: 'FULL_DIRECTORY' },
     { triggerType: 'MANUAL' }
@@ -339,10 +350,10 @@ test('GET /api/jobs/:id returns job status', async () => {
   });
   await listen(server);
   try {
-    const res = await request(server, 'GET', '/api/jobs/job-api');
+    const res = await request(server, 'GET', `/api/jobs/${IDS.jobApi}`);
     assert.equal(res.statusCode, 200);
     const json = JSON.parse(res.body);
-    assert.equal(json.reviewId, 'job-api');
+    assert.equal(json.reviewId, IDS.jobApi);
     assert.equal(json.status, 'QUEUED');
   } finally {
     await close(server);
@@ -354,7 +365,7 @@ test('GET /api/reports and /api/reports/:id', async () => {
   const reportsDir = await makeTempDir('crs-web-reports-');
   const jobService = makeFakeJobService();
   const report = {
-    reviewId: 'rep-1',
+    reviewId: IDS.rep,
     createdAt: '2026-01-03T00:00:00.000Z',
     status: 'SUCCEEDED',
     durationMs: 5,
@@ -373,11 +384,11 @@ test('GET /api/reports and /api/reports/:id', async () => {
     assert.equal(list.statusCode, 200);
     const summaries = JSON.parse(list.body);
     assert.equal(summaries.length, 1);
-    assert.equal(summaries[0].reviewId, 'rep-1');
+    assert.equal(summaries[0].reviewId, IDS.rep);
 
-    const one = await request(server, 'GET', '/api/reports/rep-1');
+    const one = await request(server, 'GET', `/api/reports/${IDS.rep}`);
     assert.equal(one.statusCode, 200);
-    assert.equal(JSON.parse(one.body).reviewId, 'rep-1');
+    assert.equal(JSON.parse(one.body).reviewId, IDS.rep);
   } finally {
     await close(server);
   }
@@ -388,7 +399,7 @@ test('GET /reports/:id escapes echoed content; file routes serve or 404', async 
   const reportsDir = await makeTempDir('crs-web-reports-');
   const jobService = makeFakeJobService();
   const report = {
-    reviewId: 'web-rep',
+    reviewId: IDS.webRep,
     createdAt: '2026-01-04T00:00:00.000Z',
     completedAt: '2026-01-04T00:00:01.000Z',
     status: 'SUCCEEDED',
@@ -408,7 +419,7 @@ test('GET /reports/:id escapes echoed content; file routes serve or 404', async 
   };
   jobService._addReport(report);
 
-  const reportDir = path.join(reportsDir, 'web-rep');
+  const reportDir = path.join(reportsDir, IDS.webRep);
   await fs.mkdir(reportDir, { recursive: true });
   await fs.writeFile(path.join(reportDir, 'report.json'), JSON.stringify(report), 'utf8');
   await fs.writeFile(path.join(reportDir, 'report.html'), '<html>file</html>', 'utf8');
@@ -420,21 +431,72 @@ test('GET /reports/:id escapes echoed content; file routes serve or 404', async 
   });
   await listen(server);
   try {
-    const page = await request(server, 'GET', '/reports/web-rep');
+    const page = await request(server, 'GET', `/reports/${IDS.webRep}`);
     assert.equal(page.statusCode, 200);
     assert.match(page.body, /proj&lt;img&gt;/);
     assert.equal(page.body.includes('<img>'), false);
 
-    const html = await request(server, 'GET', '/reports/web-rep/report.html');
+    const html = await request(server, 'GET', `/reports/${IDS.webRep}/report.html`);
     assert.equal(html.statusCode, 200);
     assert.equal(html.body, '<html>file</html>');
 
-    const json = await request(server, 'GET', '/reports/web-rep/report.json');
+    const json = await request(server, 'GET', `/reports/${IDS.webRep}/report.json`);
     assert.equal(json.statusCode, 200);
-    assert.equal(JSON.parse(json.body).reviewId, 'web-rep');
+    assert.equal(JSON.parse(json.body).reviewId, IDS.webRep);
 
     const missing = await request(server, 'GET', '/reports/missing/report.html');
     assert.equal(missing.statusCode, 404);
+  } finally {
+    await close(server);
+  }
+});
+
+test('GET /jobs rejects script-breakout reviewId (XSS)', async () => {
+  const { root } = await setupAllowedProject();
+  const reportsDir = await makeTempDir('crs-web-reports-');
+  const jobService = makeFakeJobService();
+  const server = createWebAdapter({
+    jobService,
+    config: makeConfig(root, reportsDir),
+    validateRequest: validateCreateReviewRequest
+  });
+  await listen(server);
+  try {
+    const payload = '</script><script>alert(1)//';
+    const res = await request(server, 'GET', `/jobs/${encodeURIComponent(payload)}`);
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.body.includes('</script><script>'), false);
+    assert.equal(res.body.includes('alert(1)'), false);
+  } finally {
+    await close(server);
+  }
+});
+
+test('GET /reports/:id/report.html rejects path-traversal id', async () => {
+  const { root } = await setupAllowedProject();
+  const reportsDir = await makeTempDir('crs-web-reports-');
+  const outsideDir = path.join(path.dirname(reportsDir), 'secret-outside');
+  await fs.mkdir(outsideDir, { recursive: true });
+  const outsideFile = path.join(outsideDir, 'report.html');
+  await fs.writeFile(outsideFile, 'OUTSIDE_SECRET', 'utf8');
+
+  const jobService = makeFakeJobService();
+  const server = createWebAdapter({
+    jobService,
+    config: makeConfig(root, reportsDir),
+    validateRequest: validateCreateReviewRequest
+  });
+  await listen(server);
+  try {
+    // Encoded slash keeps a single :id segment that decodes to ../secret-outside
+    const evilId = `..%2F${path.basename(outsideDir)}`;
+    const res = await request(server, 'GET', `/reports/${evilId}/report.html`);
+    assert.equal(res.statusCode, 404);
+    assert.equal(res.body.includes('OUTSIDE_SECRET'), false);
+
+    const resDotDot = await request(server, 'GET', `/reports/${encodeURIComponent('..')}/report.html`);
+    assert.equal(resDotDot.statusCode, 404);
+    assert.equal(resDotDot.body.includes('OUTSIDE_SECRET'), false);
   } finally {
     await close(server);
   }
@@ -445,7 +507,7 @@ test('POST /api/reviews accepts form fields with checklist.includePaths CSV', as
   const reportsDir = await makeTempDir('crs-web-reports-');
   /** @type {object|null} */
   let enqueued = null;
-  const jobService = makeFakeJobService({ reviewId: 'form-id' });
+  const jobService = makeFakeJobService({ reviewId: IDS.form });
   const originalEnqueue = jobService.enqueue.bind(jobService);
   jobService.enqueue = (req, opts) => {
     enqueued = req;

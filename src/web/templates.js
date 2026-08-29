@@ -1,11 +1,26 @@
 import { htmlEscape } from '../shared/html-escape.js';
 
 /**
+ * Escape dynamic text for safe HTML insertion.
  * @param {unknown} value
  * @returns {string}
  */
 function e(value) {
   return htmlEscape(value);
+}
+
+/**
+ * Embed a value as a JS literal inside a <script> block.
+ * JSON.stringify alone does not escape `</script>`.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function safeJsonForScript(value) {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
 }
 
 /**
@@ -159,8 +174,8 @@ export function renderJobPage({ reviewId }) {
   <pre id="error"></pre>
   <p><a href="/">返回首页</a></p>
   <script>
-    const apiUrl = ${JSON.stringify(apiJobsPath)};
-    const reportUrl = ${JSON.stringify(reportPath)};
+    const apiUrl = ${safeJsonForScript(apiJobsPath)};
+    const reportUrl = ${safeJsonForScript(reportPath)};
     const statusEl = document.getElementById('status');
     const errorEl = document.getElementById('error');
 
