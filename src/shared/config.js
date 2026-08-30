@@ -48,6 +48,26 @@ const DEFAULTS = {
   scheduler: {
     stateFile: './data/scheduler-state.json',
     profiles: []
+  },
+  remoteGit: {
+    workspaceDir: './data/remotes',
+    ephemeral: false,
+    fetchRetries: 3,
+    credentials: { type: 'https', tokenEnv: '', usernameEnv: '' }
+  },
+  analyzer: {
+    enabled: false,
+    tool: 'clang-tidy',
+    command: 'clang-tidy',
+    args: ['--export-fixes={outputFile}', '{file}'],
+    timeoutMs: 300000,
+    onAnalyzerError: 'skip'
+  },
+  sharding: {
+    enabled: false,
+    shardChars: 120000,
+    maxShards: 20,
+    maxConcurrency: 1
   }
 };
 
@@ -135,6 +155,27 @@ export async function loadConfig(configPath) {
     }
     if (!process.env[envName]) {
       throw new Error(`远程大模型 API Key 环境变量未设置: ${envName}`);
+    }
+  }
+
+  const onAnalyzerError = merged.analyzer?.onAnalyzerError;
+  if (onAnalyzerError !== 'skip' && onAnalyzerError !== 'fail') {
+    throw new Error('analyzer.onAnalyzerError 必须是 skip 或 fail');
+  }
+
+  const fetchRetries = merged.remoteGit?.fetchRetries;
+  if (typeof fetchRetries !== 'number' || !Number.isInteger(fetchRetries) || fetchRetries < 0) {
+    throw new Error('remoteGit.fetchRetries 必须是非负整数');
+  }
+
+  for (const [field, label] of [
+    ['shardChars', 'sharding.shardChars'],
+    ['maxShards', 'sharding.maxShards'],
+    ['maxConcurrency', 'sharding.maxConcurrency']
+  ]) {
+    const value = merged.sharding?.[field];
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
+      throw new Error(`${label} 必须是 >=1 的整数`);
     }
   }
 

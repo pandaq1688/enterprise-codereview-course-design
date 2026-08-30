@@ -48,5 +48,29 @@
   "scheduler": {
     "stateFile": "./data/scheduler-state.json",
     "profiles": []
+  },
+  "remoteGit": {
+    "workspaceDir": "./data/remotes",
+    "ephemeral": false,
+    "fetchRetries": 3,
+    "credentials": {
+      "type": "https",
+      "tokenEnv": "REMOTE_GIT_TOKEN",
+      "usernameEnv": ""
+    }
+  },
+  "analyzer": {
+    "enabled": false,
+    "tool": "clang-tidy",
+    "command": "clang-tidy",
+    "args": ["--export-fixes={outputFile}", "{file}"],
+    "timeoutMs": 300000,
+    "onAnalyzerError": "skip"
+  },
+  "sharding": {
+    "enabled": false,
+    "shardChars": 120000,
+    "maxShards": 20,
+    "maxConcurrency": 1
   }
 }
