@@ -50,15 +50,15 @@ MVP 达成以下结果即视为完成：
 1. 使用 FakeReviewProvider 的自动化端到端测试可以从两个本地路径生成 JSON 和 HTML 报告。
 2. Git 模式能同时识别暂存、未暂存和未跟踪的受支持文件。
 3. 全量模式能正确包含受支持文件并排除固定目录和二进制文件。
-4. 混合 C/C++、Java、JavaScript 输入能自动加载对应固定规则。
-5. 用户只能替换或配置 review-checklist，不能从外部配置替换全局、 C/C++、Java、JavaScript 规则。
+4. 混合 C/C++、Java、JavaScript、Python、Go 输入能自动加载对应固定规则。
+5. 用户只能替换或配置 review-checklist，不能从外部配置替换全局、 C/C++、Java、JavaScript、Python、Go 规则。
 6. 每个被降级、修正、合并或豁免的问题都有规则编号和中文原因。
 7. Cursor 输出非法时生成失败任务和失败报告，不伪造代码缺陷。
 8. 真实 Cursor 的人工验收能够完成一次审查并显示报告。
 9. RemoteLlmReviewProvider 通过配置可切换，自动化测试（Mock Server）验收通过，且满足 §19。
 10. ReviewScheduler 按 ReviewProfile 定时触发审查，自动化测试（含 FakeClock）验收通过，且满足 §20。
 11. REMOTE_GIT 模式能完成 clone 与 fetch/pull 并进入审查，错误码与重试行为满足 §21，自动化测试（本地 bare 仓库）验收通过。
-12. 内置 clang-tidy 分析器能与 AI Finding 并列进同一报告并经 PostReviewPolicy 去重，自动化测试满足 §22。
+12. 内置 clang-tidy / ruff / go vet 分析器能与 AI Finding 并列进同一报告并经 PostReviewPolicy 去重，自动化测试满足 §22。
 13. 超输入限制时自动分片多轮 Agent 并聚合为单一报告，分片上限与失败处理满足 §23，自动化测试验收通过。
 
 未完成 §19、§20、§21、§22 与 §23 的系统不得视为交付完成。
@@ -73,8 +73,8 @@ MVP 达成以下结果即视为完成：
 - 本地需求 Markdown 路径输入。
 - Git 变更模式。
 - 全量目录模式。
-- C、C++、Java 和 JavaScript 源文件。
-- 固定全局、C/C++、Java、JavaScript 规则。
+- C、C++、Java、JavaScript、Python 和 Go 源文件。
+- 固定全局、C/C++、Java、JavaScript、Python、Go 规则。
 - 可配置 review-checklist。
 - 本机 Cursor Agent Provider。
 - 异步任务状态。
@@ -103,7 +103,7 @@ MVP 达成以下结果即视为完成：
 1. RemoteLlmReviewProvider（§19）：通过 API Key 调用真实远程大模型。
 2. ReviewScheduler（§20）：按照本地 ReviewProfile 定时执行相同的审查用例。
 3. Git 远程仓库拉取（§21）：支持 clone 与 fetch/pull，拉取后转本地工作目录再走现有审查流程。
-4. 外部静态分析器组合（§22）：内置 clang-tidy，结果与 AI Finding 并列进同一报告。
+4. 外部静态分析器组合（§22）：内置 clang-tidy、ruff、go vet，结果与 AI Finding 并列进同一报告。
 5. 大项目分片与并行 Agent（§23）：超输入限制时自动分片多轮 Agent，再聚合后统一二次过滤。
 
 这些扩展点必须复用 ReviewJobService、二次过滤和报告组件，不得复制主业务流程。缺少任一扩展点均视为未完成。
@@ -214,6 +214,8 @@ Domain 不读取文件、不启动进程、不访问 HTTP。Application 负责�
 - 输入包含 C/C++文件时加载固定 C/C++ 规则。
 - 输入包含 Java 文件时加载固定 Java 规则。
 - 输入包含 JavaScript 文件时加载固定 JavaScript 规则。
+- 输入包含 Python 文件时加载固定 Python 规则。
+- 输入包含 Go 文件时加载固定 Go 规则。
 - 根据 includePaths 和 excludePaths 判断是否加载 review-checklist。
 - 对规则内容计算 SHA-256。
 - 输出规则与匹配文件的可追溯清单。
@@ -311,10 +313,10 @@ Cursor 命令名和参数因本机安装方式而异，因此示例配置不被�
 - 鉴权通过环境变量注入，不持有明文凭据。
 - 拉取失败映射为 REMOTE_FETCH_FAILED / REMOTE_AUTH_FAILED / REMOTE_REF_NOT_FOUND。
 
-#### ClangTidyAnalyzer（§22）
+#### ClangTidyAnalyzer / RuffAnalyzer / GoVetAnalyzer（§22）
 
-- 对受支持 C/C++ 文件运行 clang-tidy，解析结果为 Analyzer Finding。
-- 失败时按 onAnalyzerError 跳过或失败。
+- 对受支持 C/C++、Python、Go 文件分别运行对应分析器，解析结果为 Analyzer Finding。
+- 失败时按该项 onAnalyzerError 跳过或失败。
 - 不修改被审查源码。
 
 #### ShardPlanner / ShardAggregator（§23）
@@ -333,6 +335,8 @@ MVP 固定支持：
 - C++：.cc、.cpp、.cxx、.h、.hpp、.hxx
 - Java：.java
 - JavaScript：.js、.mjs、.cjs
+- Python：.py
+- Go：.go
 
 扩展名比较不区分大小写。没有扩展名或不在列表中的文件不进入审查。
 
@@ -454,7 +458,27 @@ inputHash 用于报告追溯和后续定时任务去重，不用于安全签名�
 
 删除原规则中的项目专属命名约定或未在输入中出现的约定。
 
-### 9.5 可配置 review-checklist
+### 9.5 固定 Python 规则
+
+精简规则只保留通用高价值项：
+
+- 可变默认参数、闭包晚绑定、意外的全局可变状态。
+- 异常吞没、裸 `except`、资源未用 `with` 关闭。
+- 并发竞态与未 await 的协程。
+- SQL/命令/路径注入与不安全的 `eval`/`exec`/`pickle`。
+- 外部输入边界与路径穿越。
+
+### 9.6 固定 Go 规则
+
+精简规则只保留通用高价值项：
+
+- 错误处理与错误包装。
+- goroutine 泄漏、channel 与 data race。
+- 资源关闭与 defer 陷阱。
+- context 传递与超时。
+- 输入校验与命令执行安全。
+
+### 9.7 可配置 review-checklist
 
 review-checklist 是唯一允许自由配置的审查规则：
 
@@ -466,14 +490,14 @@ review-checklist 是唯一允许自由配置的审查规则：
 
 默认 checklist 精简保留并发、内存边界、外部输入、错误处理、资源生命周期和控制流检查。
 
-全局、C/C++、Java 和 JavaScript 规则路径不出现在外部配置中，由 RuleResolver 固定引用。这里的“只有 checklist 可配置”只限制审查规则；端口、允许根目录、超时和输入上限等运行参数仍可配置。
+全局、C/C++、Java、JavaScript、Python 和 Go 规则路径不出现在外部配置中，由 RuleResolver 固定引用。这里的“只有 checklist 可配置”只限制审查规则；端口、允许根目录、超时和输入上限等运行参数仍可配置。
 
-### 9.6 规则追溯
+### 9.8 规则追溯
 
 报告中每条生效规则记录：
 
 - ruleId。
-- ruleType：GLOBAL、CPP、JAVA、JS 或 CHECKLIST。
+- ruleType：GLOBAL、CPP、JAVA、JS、PYTHON、GO 或 CHECKLIST。
 - builtIn。
 - contentHash。
 - matchPaths。
@@ -856,10 +880,10 @@ MVP 不自动重试 Cursor。用户可以在页面重新运行任务。这样可
 
 ### AC-02 全量混合语言
 
-给定包含 C++、Java、JavaScript 和不支持文件的目录：
+给定包含 C++、Java、JavaScript、Python、Go 和不支持文件的目录：
 
 - 只采集受支持文件。
-- 同时装配 C++、Java 和 JavaScript 规则。
+- 同时装配 C++、Java、JavaScript、Python 和 Go 规则。
 - 不支持文件不进入 Prompt。
 
 ### AC-03 checklist 可配置
@@ -1050,27 +1074,27 @@ provider 为 cursor 时忽略 remote；provider 为 remote 时启动阶段确认
 
 ### 22.1 目标
 
-在 AI 语义分析之外，内置 clang-tidy 作为外部静态分析器，将其结果作为独立 Finding 源与 AI Finding 并列进入同一报告，统一走 PostReviewPolicy 去重与定级，复用现有报告模型与审计轨迹。
+在 AI 语义分析之外，内置 clang-tidy、ruff、go vet 作为外部静态分析器，将其结果作为独立 Finding 源与 AI Finding 并列进入同一报告，统一走 PostReviewPolicy 去重与定级，复用现有报告模型与审计轨迹。
 
 ### 22.2 约束
 
-- 本阶段**只内置 clang-tidy 一个工具**，覆盖 C/C++；Java 本阶段不内置分析器，预留 Analyzer 接口。
-- 内置 clang-tidy 调用与结果解析，命令模板固定，仅开关、可执行路径与参数占位可配。
-- clang-tidy Finding 与 AI Finding **并列**进同一报告，统一走 PostReviewPolicy；不在策略中偏袒工具结果。
-- 每条 Analyzer Finding 分配 `analyzerId`（如 `clang-tidy`）与 `ruleId`（对应 clang-tidy check 名），走与 AI Finding 相同的 PostReviewPolicy 决策步骤，保留原始风险、最终风险与决策步骤（参考 §5.3）。
-- clang-tidy 未安装、超时或结果解析失败时，默认**跳过**并记录 `ANALYZER_SKIPPED` warning，审查继续；配置 `analyzer.onAnalyzerError = fail` 时升级为 `ANALYZER_FAILED` 并使任务 FAILED。
-- Analyzer 仅对受支持扩展名（§8.1）的 C/C++ 文件运行；Java 文件跳过。
+- 本阶段内置三个工具：clang-tidy（C/C++）、ruff（Python）、go vet（Go）；Java / JavaScript 本阶段不内置分析器。
+- 配置使用 `analyzers[]` 列表，每项可独立开关；兼容旧版单个 `analyzer` 对象。
+- Analyzer Finding 与 AI Finding **并列**进同一报告，统一走 PostReviewPolicy；不在策略中偏袒工具结果。
+- 每条 Analyzer Finding 分配 `analyzerId`（如 `clang-tidy` / `ruff` / `go-vet`）与 `ruleId`，走与 AI Finding 相同的 PostReviewPolicy 决策步骤。
+- 分析器未安装、超时或结果解析失败时，默认**跳过**并记录 `ANALYZER_SKIPPED` warning，审查继续；该项 `onAnalyzerError = fail` 时升级为 `ANALYZER_FAILED` 并使任务 FAILED。
+- Analyzer 仅对各自受支持扩展名运行；不匹配语言的文件跳过。
 - Analyzer 不修改被审查源码。
 
 ### 22.3 配置
 
-见 §14.1 中 `analyzer` 段。`analyzer.enabled = false` 时整段不生效。
+见 §14.1 中 `analyzers` 段（及兼容用 `analyzer`）。某项 `enabled = false` 时该项不生效。
 
 ### 22.4 验收
 
-- 在含 C++ 文件的临时仓库中启用 analyzer，报告同时出现 AI Finding 与 clang-tidy Finding，二者均带规则编号与审计步骤。
-- clang-tidy 未安装时任务不失败，报告与日志含 `ANALYZER_SKIPPED`。
-- `onAnalyzerError = fail` 时 clang-tidy 失败导致任务 FAILED。
+- 在含 C++ / Python / Go 文件的临时仓库中分别启用对应分析器，报告同时出现 AI Finding 与 Analyzer Finding。
+- 分析器未安装时任务不失败，报告与日志含 `ANALYZER_SKIPPED`。
+- `onAnalyzerError = fail` 时分析器失败导致任务 FAILED。
 - Analyzer Finding 经 PostReviewPolicy 后与重复 AI Finding 正确去重（PF-009）。
 - 被审查源码在 Analyzer 运行前后内容一致。
 

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConfig } from './shared/config.js';
+import { loadConfig, resolveAnalyzersList } from './shared/config.js';
 import { createSystemClock } from './shared/clock.js';
 import { createLogger } from './shared/logger.js';
 import { createFileReportRepository } from './file-report-repository.js';
@@ -18,7 +18,38 @@ import { createCursorReviewProvider } from './providers/cursor-review-provider.j
 import { createRemoteLlmReviewProvider } from './providers/remote-llm-review-provider.js';
 import { createRemoteGitFetcher } from './remote-git-fetcher.js';
 import { createClangTidyAnalyzer } from './clang-tidy-analyzer.js';
+import { createRuffAnalyzer } from './ruff-analyzer.js';
+import { createGoVetAnalyzer } from './go-vet-analyzer.js';
 import { createWebAdapter } from './web/web-adapter.js';
+
+/**
+ * @param {object} entry
+ * @param {object|null} logger
+ */
+function createAnalyzerFromEntry(entry, logger) {
+  const common = {
+    command: entry.command,
+    args: entry.args,
+    timeoutMs: entry.timeoutMs,
+    onAnalyzerError: entry.onAnalyzerError,
+    logger
+  };
+  if (entry.id === 'ruff') return createRuffAnalyzer(common);
+  if (entry.id === 'go-vet') return createGoVetAnalyzer(common);
+  return createClangTidyAnalyzer(common);
+}
+
+/**
+ * @param {object} config
+ * @param {object|null} logger
+ * @returns {object[]}
+ */
+function buildAnalyzersFromConfig(config, logger) {
+  return resolveAnalyzersList(config)
+    .filter((a) => a.enabled)
+    .map((a) => createAnalyzerFromEntry(a, logger));
+}
+
 
 /**
  * @param {object} config
@@ -111,17 +142,11 @@ export async function createApp(overrides = {}) {
     overrides.ruleResolver ??
     ((opts) => resolveRules({ ...opts, rulesDir: opts.rulesDir ?? rulesDir }));
 
-  const analyzer =
-    overrides.analyzer ??
-    (config.analyzer?.enabled
-      ? createClangTidyAnalyzer({
-          command: config.analyzer.command,
-          args: config.analyzer.args,
-          timeoutMs: config.analyzer.timeoutMs,
-          onAnalyzerError: config.analyzer.onAnalyzerError,
-          logger
-        })
-      : null);
+  const analyzers =
+    overrides.analyzers ??
+    (overrides.analyzer
+      ? [overrides.analyzer]
+      : buildAnalyzersFromConfig(config, logger));
 
   const jobService =
     overrides.jobService ??
@@ -140,7 +165,8 @@ export async function createApp(overrides = {}) {
       logger,
       idFactory: overrides.idFactory ?? (() => repository.createReviewId()),
       remoteGitFetcher,
-      analyzer
+      analyzers,
+      analyzer: analyzers[0] ?? null
     });
 
   const validateRequest = overrides.validateRequest ?? validateCreateReviewRequest;

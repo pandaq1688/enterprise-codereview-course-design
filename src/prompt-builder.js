@@ -54,6 +54,8 @@ export function buildPrompt({ requirementText, sourceMode, files, contents, rule
   const cppRules = ruleList.filter((r) => r.ruleType === 'CPP').map((r) => r.content);
   const javaRules = ruleList.filter((r) => r.ruleType === 'JAVA').map((r) => r.content);
   const jsRules = ruleList.filter((r) => r.ruleType === 'JS').map((r) => r.content);
+  const pythonRules = ruleList.filter((r) => r.ruleType === 'PYTHON').map((r) => r.content);
+  const goRules = ruleList.filter((r) => r.ruleType === 'GO').map((r) => r.content);
   const checklistRules = ruleList.filter((r) => r.ruleType === 'CHECKLIST').map((r) => r.content);
 
   const scopeLines = [
@@ -74,6 +76,12 @@ export function buildPrompt({ requirementText, sourceMode, files, contents, rule
   }
   if (jsRules.length > 0) {
     languageRuleBlocks.push('### JavaScript', ...jsRules);
+  }
+  if (pythonRules.length > 0) {
+    languageRuleBlocks.push('### Python', ...pythonRules);
+  }
+  if (goRules.length > 0) {
+    languageRuleBlocks.push('### Go', ...goRules);
   }
 
   const sourceBlocks = fileList.map((f) => {

@@ -114,8 +114,16 @@ export function createReviewJobService(deps) {
     logger,
     idFactory,
     remoteGitFetcher,
-    analyzer
+    analyzer,
+    analyzers
   } = deps;
+
+  const analyzersList =
+    Array.isArray(analyzers) && analyzers.length > 0
+      ? analyzers
+      : analyzer
+        ? [analyzer]
+        : [];
 
   /** @type {Map<string, object>} */
   const jobs = new Map();
@@ -589,24 +597,32 @@ export function createReviewJobService(deps) {
       }
 
       const aiFindings = parsed.findings;
-      let mergedRaw = aiFindings;
-      if (analyzer && config.analyzer?.enabled) {
-        try {
-          const analyzerFindings = await analyzer.analyze({
-            projectDir: job.effectiveProjectDir,
-            files: collected.source.files,
-            signal: currentAbort.signal
-          });
-          mergedRaw = [...aiFindings, ...analyzerFindings];
-        } catch (err) {
-          if (
-            err instanceof AppError &&
-            err.code === ErrorCodes.ANALYZER_FAILED &&
-            config.analyzer?.onAnalyzerError === 'skip'
-          ) {
-            logAnalyzerSkipped(logger, job.reviewId);
-            mergedRaw = aiFindings;
-          } else {
+      let mergedRaw = [...aiFindings];
+      const anyAnalyzerEnabled =
+        config.analyzer?.enabled === true ||
+        (Array.isArray(config.analyzers) && config.analyzers.some((a) => a.enabled === true));
+      if (analyzersList.length > 0 && anyAnalyzerEnabled) {
+        for (const currentAnalyzer of analyzersList) {
+          try {
+            const analyzerFindings = await currentAnalyzer.analyze({
+              projectDir: job.effectiveProjectDir,
+              files: collected.source.files,
+              signal: currentAbort.signal
+            });
+            mergedRaw.push(...analyzerFindings);
+          } catch (err) {
+            const onErr =
+              config.analyzer?.enabled === true
+                ? config.analyzer.onAnalyzerError
+                : ((config.analyzers ?? []).find((a) => a.enabled)?.onAnalyzerError ?? 'skip');
+            if (
+              err instanceof AppError &&
+              err.code === ErrorCodes.ANALYZER_FAILED &&
+              onErr === 'skip'
+            ) {
+              logAnalyzerSkipped(logger, job.reviewId);
+              continue;
+            }
             throw err;
           }
         }

@@ -10,8 +10,18 @@ const BUILTIN_FILES = Object.freeze({
   GLOBAL: 'global-review.md',
   CPP: 'cpp-review.md',
   JAVA: 'java-review.md',
-  JS: 'js-review.md'
+  JS: 'js-review.md',
+  PYTHON: 'python-review.md',
+  GO: 'go-review.md'
 });
+
+const LANGUAGE_RULES = Object.freeze([
+  { language: 'CPP', ruleType: 'CPP', fileKey: 'CPP' },
+  { language: 'JAVA', ruleType: 'JAVA', fileKey: 'JAVA' },
+  { language: 'JS', ruleType: 'JS', fileKey: 'JS' },
+  { language: 'PYTHON', ruleType: 'PYTHON', fileKey: 'PYTHON' },
+  { language: 'GO', ruleType: 'GO', fileKey: 'GO' }
+]);
 
 /**
  * Path-prefix match on segment boundaries. '.' matches all.
@@ -59,7 +69,7 @@ async function readRuleFile(filePath, ruleLabel = filePath) {
 /**
  * @param {object} opts
  * @param {string} opts.ruleId
- * @param {'GLOBAL'|'CPP'|'JAVA'|'JS'|'CHECKLIST'} opts.ruleType
+ * @param {'GLOBAL'|'CPP'|'JAVA'|'JS'|'PYTHON'|'GO'|'CHECKLIST'} opts.ruleType
  * @param {boolean} opts.builtIn
  * @param {string} opts.content
  * @param {string[]} opts.matchPaths
@@ -111,47 +121,19 @@ export async function resolveRules({ projectDir, files, checklist, rulesDir }) {
     })
   );
 
-  const cppFiles = inputFiles.filter((f) => f.language === 'CPP').map((f) => f.path);
-  if (cppFiles.length > 0) {
-    const content = await readRuleFile(path.join(dir, BUILTIN_FILES.CPP), BUILTIN_FILES.CPP);
+  for (const { language, ruleType, fileKey } of LANGUAGE_RULES) {
+    const langFiles = inputFiles.filter((f) => f.language === language).map((f) => f.path);
+    if (langFiles.length === 0) continue;
+    const fileName = BUILTIN_FILES[fileKey];
+    const content = await readRuleFile(path.join(dir, fileName), fileName);
     rules.push(
       toResolvedRule({
-        ruleId: 'CPP',
-        ruleType: 'CPP',
+        ruleId: ruleType,
+        ruleType,
         builtIn: true,
         content,
-        matchPaths: cppFiles,
-        matchedFiles: cppFiles
-      })
-    );
-  }
-
-  const javaFiles = inputFiles.filter((f) => f.language === 'JAVA').map((f) => f.path);
-  if (javaFiles.length > 0) {
-    const content = await readRuleFile(path.join(dir, BUILTIN_FILES.JAVA), BUILTIN_FILES.JAVA);
-    rules.push(
-      toResolvedRule({
-        ruleId: 'JAVA',
-        ruleType: 'JAVA',
-        builtIn: true,
-        content,
-        matchPaths: javaFiles,
-        matchedFiles: javaFiles
-      })
-    );
-  }
-
-  const jsFiles = inputFiles.filter((f) => f.language === 'JS').map((f) => f.path);
-  if (jsFiles.length > 0) {
-    const content = await readRuleFile(path.join(dir, BUILTIN_FILES.JS), BUILTIN_FILES.JS);
-    rules.push(
-      toResolvedRule({
-        ruleId: 'JS',
-        ruleType: 'JS',
-        builtIn: true,
-        content,
-        matchPaths: jsFiles,
-        matchedFiles: jsFiles
+        matchPaths: langFiles,
+        matchedFiles: langFiles
       })
     );
   }

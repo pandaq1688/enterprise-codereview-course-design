@@ -14,7 +14,8 @@
     "allowedExtensions": [
       ".c", ".cc", ".cpp", ".cxx",
       ".h", ".hpp", ".hxx", ".java",
-      ".js", ".mjs", ".cjs"
+      ".js", ".mjs", ".cjs",
+      ".py", ".go"
     ]
   },
   "cursor": {
@@ -68,6 +69,32 @@
     "timeoutMs": 300000,
     "onAnalyzerError": "skip"
   },
+  "analyzers": [
+    {
+      "id": "clang-tidy",
+      "enabled": false,
+      "command": "clang-tidy",
+      "args": ["--export-fixes={outputFile}", "{file}"],
+      "timeoutMs": 300000,
+      "onAnalyzerError": "skip"
+    },
+    {
+      "id": "ruff",
+      "enabled": false,
+      "command": "ruff",
+      "args": ["check", "--output-format=json", "{file}"],
+      "timeoutMs": 300000,
+      "onAnalyzerError": "skip"
+    },
+    {
+      "id": "go-vet",
+      "enabled": false,
+      "command": "go",
+      "args": ["vet", "{file}"],
+      "timeoutMs": 300000,
+      "onAnalyzerError": "skip"
+    }
+  ],
   "sharding": {
     "enabled": false,
     "shardChars": 120000,
