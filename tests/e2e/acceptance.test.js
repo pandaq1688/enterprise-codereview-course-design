@@ -15,7 +15,12 @@ import {
   createGitChangesFixture,
   createFullDirectoryFixture,
   createChecklistFixture,
-  createPathOutsideFixture
+  createPathOutsideFixture,
+  createRemoteGitFixture,
+  createFakeAnalyzer,
+  createShardFixture,
+  createShardCountingProvider,
+  realTempDir
 } from '../helpers/e2e-fixtures.js';
 import { createFakeReviewProvider } from '../helpers/fake-review-provider.js';
 import { createReviewJobService } from '../../src/review-job-service.js';
@@ -95,13 +100,19 @@ async function pollUntilDone(server, reviewId, timeoutMs = 10_000) {
   throw new Error(`timeout waiting for job ${reviewId}`);
 }
 
-async function startApp({ allowedRoot, reportsDir, provider, configExtras = {} }) {
+async function startApp({ allowedRoot, reportsDir, provider, configExtras = {}, analyzer, remoteGitFetcher, allowedRoots }) {
   const config = createE2eConfig({ allowedRoot, reportsDir, extras: configExtras });
   const quietLogger = createLogger({
     stream: { write() {} },
     clock: createSystemClock()
   });
-  const app = await createApp({ config, provider, logger: quietLogger });
+  const app = await createApp({
+    config,
+    provider,
+    logger: quietLogger,
+    ...(analyzer ? { analyzer } : {}),
+    ...(remoteGitFetcher ? { remoteGitFetcher } : {})
+  });
   await app.start();
   return app;
 }
@@ -634,4 +645,339 @@ test('AC-08: restart keeps listSummaries report; in-memory QUEUED is not resurre
   serviceSlow.pauseAccepting();
   await serviceSlow.waitForIdle(100);
   assert.ok(repository);
+});
+
+// ---------------------------------------------------------------------------
+// AC-10: Remote Git fetch (§21). Uses a local bare repo as the remote and the
+// real remote-git-fetcher in ephemeral mode; no real network.
+// ---------------------------------------------------------------------------
+
+test('AC-10: REMOTE_GIT clone path → SUCCEEDED, source.files contains a.c', async () => {
+  const fixture = await createRemoteGitFixture();
+  const realTmp = await realTempDir();
+  const provider = createRecordingFakeProvider({ rawOutput: FAKE_OK_JSON });
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider,
+    configExtras: {
+      security: { allowedRoots: [fixture.allowedRoot, realTmp] },
+      remoteGit: { ephemeral: true, fetchRetries: 0 }
+    }
+  });
+
+  try {
+    const remoteUrl = fixture.bare.replace(/\\/g, '/');
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        sourceMode: 'REMOTE_GIT',
+        remoteUrl,
+        ref: fixture.headRef,
+        reviewMode: 'FULL_DIRECTORY',
+        requirementFile: fixture.requirementFile,
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const reviewId = created.json.reviewId;
+
+    const job = await pollUntilDone(app.server, reviewId);
+    assert.equal(job.status, 'SUCCEEDED');
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${reviewId}`);
+    assert.equal(reportRes.statusCode, 200);
+    const report = reportRes.json;
+    assert.equal(report.request.sourceMode, 'REMOTE_GIT');
+    assert.equal(report.request.reviewMode, 'FULL_DIRECTORY');
+    assert.equal(report.request.remoteUrl, remoteUrl);
+    const paths = report.source.files.map((f) => f.path).sort();
+    assert.ok(paths.includes('a.c'), `expected a.c in ${JSON.stringify(paths)}`);
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+test('AC-10: REMOTE_GIT missing ref → FAILED REMOTE_REF_NOT_FOUND', async () => {
+  const fixture = await createRemoteGitFixture();
+  const realTmp = await realTempDir();
+  const provider = createRecordingFakeProvider({ rawOutput: FAKE_OK_JSON });
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider,
+    configExtras: {
+      security: { allowedRoots: [fixture.allowedRoot, realTmp] },
+      remoteGit: { ephemeral: true, fetchRetries: 0 }
+    }
+  });
+
+  try {
+    const remoteUrl = fixture.bare.replace(/\\/g, '/');
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        sourceMode: 'REMOTE_GIT',
+        remoteUrl,
+        ref: 'does-not-exist',
+        reviewMode: 'FULL_DIRECTORY',
+        requirementFile: fixture.requirementFile,
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'FAILED');
+    assert.equal(job.error.code, ErrorCodes.REMOTE_REF_NOT_FOUND);
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${created.json.reviewId}`);
+    assert.equal(reportRes.statusCode, 200);
+    assert.equal(reportRes.json.status, 'FAILED');
+    assert.equal(reportRes.json.errors[0].code, ErrorCodes.REMOTE_REF_NOT_FOUND);
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AC-11: External static analyzer (§22). FakeAnalyzer stands in for clang-tidy
+// via overrides.analyzer; no real process spawn, no real LLM.
+// ---------------------------------------------------------------------------
+
+const AC11_AI_JSON = JSON.stringify({
+  summary: 'AC-11 ai finding',
+  overall_risk: 'LOW',
+  findings: [
+    {
+      category: 'CORRECTNESS',
+      risk_level: 'LOW',
+      title: 'ai-finding',
+      description: 'AI 发现的问题',
+      file_path: 'src/a.cpp',
+      line_start: 1,
+      line_end: 1,
+      evidence: 'int x = 1',
+      requirement_reference: '',
+      fix_suggestion: '',
+      fix_code: ''
+    }
+  ],
+  evidence: [],
+  recommended_actions: []
+});
+
+/**
+ * Build a fake analyzer finding shaped like the real clang-tidy analyzer's
+ * (post-fix) output so the analyzer→PostReviewPolicy integration is exercised.
+ * Mirrors src/clang-tidy-analyzer.js: policy-compatible fields plus legacy
+ * severity/location/message kept for existing unit-test assertions.
+ */
+function fakeAnalyzerFinding({ file = 'src/a.cpp', line = 1, ruleId = 'misc-unused' } = {}) {
+  return {
+    source: 'analyzer',
+    analyzerId: 'clang-tidy',
+    ruleId,
+    category: 'MAINTAINABILITY',
+    risk_level: 'LOW',
+    title: 'unused variable',
+    description: 'unused variable',
+    file_path: file,
+    line_start: line,
+    line_end: line,
+    evidence: '',
+    severity: 'minor',
+    location: { file, line, column: 5 },
+    message: 'unused variable'
+  };
+}
+
+test('AC-11: analyzer finding coexists with AI finding in report', async () => {
+  const fixture = await createFullDirectoryFixture();
+  const provider = createRecordingFakeProvider({ rawOutput: AC11_AI_JSON });
+  const analyzer = createFakeAnalyzer({ findings: [fakeAnalyzerFinding()] });
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider,
+    configExtras: { analyzer: { enabled: true, onAnalyzerError: 'skip' } },
+    analyzer
+  });
+
+  try {
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        projectDir: fixture.projectDir,
+        requirementFile: fixture.requirementFile,
+        sourceMode: 'FULL_DIRECTORY',
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'SUCCEEDED');
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${created.json.reviewId}`);
+    const findings = reportRes.json.result.findings;
+    const aiFinding = findings.find((f) => f.title === 'ai-finding' && f.source !== 'analyzer');
+    const analyzerFinding = findings.find(
+      (f) => f.source === 'analyzer' && f.analyzerId === 'clang-tidy' && f.ruleId === 'misc-unused'
+    );
+    assert.ok(aiFinding, 'AI finding must be present');
+    assert.ok(analyzerFinding, 'analyzer finding must be present and active');
+    assert.equal(analyzerFinding.status !== 'EXEMPTED' && analyzerFinding.status !== 'MERGED', true);
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+test('AC-11: onAnalyzerError=fail + analyzer throws → FAILED ANALYZER_FAILED', async () => {
+  const fixture = await createFullDirectoryFixture();
+  const provider = createRecordingFakeProvider({ rawOutput: AC11_AI_JSON });
+  const analyzer = createFakeAnalyzer({ findings: [], throwOnce: true });
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider,
+    configExtras: { analyzer: { enabled: true, onAnalyzerError: 'fail' } },
+    analyzer
+  });
+
+  try {
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        projectDir: fixture.projectDir,
+        requirementFile: fixture.requirementFile,
+        sourceMode: 'FULL_DIRECTORY',
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'FAILED');
+    assert.equal(job.error.code, ErrorCodes.ANALYZER_FAILED);
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${created.json.reviewId}`);
+    assert.equal(reportRes.json.errors[0].code, ErrorCodes.ANALYZER_FAILED);
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AC-12: Large-project sharding (§23). FakeReviewProvider counts review calls
+// and tracks concurrency; no real LLM.
+// ---------------------------------------------------------------------------
+
+test('AC-12: exceeding maxInputChars with sharding disabled auto-shards; review calls >= 2; ai.shards present', async () => {
+  // 3 files, each 250 chars → numbered ~257 each → total ~771 > maxInputChars(500).
+  // shardChars=200 → each file exceeds budget → 3 single-file shards.
+  const fixture = await createShardFixture({ fileCount: 3, charsPerFile: 250 });
+  const provider = createShardCountingProvider();
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider,
+    configExtras: {
+      review: { maxFiles: 50, maxFileChars: 80000, maxInputChars: 500, maxRequirementChars: 50000 },
+      sharding: { enabled: false, shardChars: 200, maxShards: 20, maxConcurrency: 1 }
+    }
+  });
+
+  try {
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        projectDir: fixture.projectDir,
+        requirementFile: fixture.requirementFile,
+        sourceMode: 'FULL_DIRECTORY',
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'SUCCEEDED');
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${created.json.reviewId}`);
+    const report = reportRes.json;
+    assert.ok(Array.isArray(report.ai.shards), 'ai.shards must be present');
+    assert.ok(report.ai.shards.length >= 2, `expected >=2 shards, got ${report.ai.shards.length}`);
+    assert.equal(report.ai.shards.length, provider.calls.length);
+    // Aggregated findings: one per shard, all active.
+    const shardFindings = report.result.findings.filter((f) =>
+      /^shard-finding-\d+$/.test(f.title ?? '')
+    );
+    assert.equal(shardFindings.length, provider.calls.length);
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+test('AC-12: sharding enabled + maxConcurrency=2 non-exceeding → review calls === shard count, concurrency <= 2', async () => {
+  // 3 files, each 150 chars → numbered ~157 each → total ~471 < maxInputChars(5000).
+  // sharding.enabled=true forces planning; shardChars=200 → 3 shards.
+  const fixture = await createShardFixture({ fileCount: 3, charsPerFile: 150 });
+  const provider = createShardCountingProvider();
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider,
+    configExtras: {
+      review: { maxFiles: 50, maxFileChars: 80000, maxInputChars: 5000, maxRequirementChars: 50000 },
+      sharding: { enabled: true, shardChars: 200, maxShards: 20, maxConcurrency: 2 }
+    }
+  });
+
+  try {
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        projectDir: fixture.projectDir,
+        requirementFile: fixture.requirementFile,
+        sourceMode: 'FULL_DIRECTORY',
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'SUCCEEDED');
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${created.json.reviewId}`);
+    const report = reportRes.json;
+    assert.ok(Array.isArray(report.ai.shards) && report.ai.shards.length >= 2);
+    assert.equal(report.ai.shards.length, provider.calls.length);
+    assert.ok(provider.maxConcurrency() <= 2, `maxConcurrency=${provider.maxConcurrency()}`);
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
+});
+
+test('AC-12: shard count > maxShards → FAILED SHARD_LIMIT_EXCEEDED', async () => {
+  // 5 files, each 10 chars → each > shardChars(5) → 5 single-file shards > maxShards(2).
+  const fixture = await createShardFixture({ fileCount: 5, charsPerFile: 10 });
+  const provider = createShardCountingProvider();
+  const app = await startApp({
+    allowedRoot: fixture.allowedRoot,
+    reportsDir: fixture.reportsDir,
+    provider,
+    configExtras: {
+      review: { maxFiles: 50, maxFileChars: 80000, maxInputChars: 5000, maxRequirementChars: 50000 },
+      sharding: { enabled: true, shardChars: 5, maxShards: 2, maxConcurrency: 1 }
+    }
+  });
+
+  try {
+    const created = await request(app.server, 'POST', '/api/reviews', {
+      body: {
+        projectDir: fixture.projectDir,
+        requirementFile: fixture.requirementFile,
+        sourceMode: 'FULL_DIRECTORY',
+        checklist: { enabled: false }
+      }
+    });
+    assert.equal(created.statusCode, 202);
+    const job = await pollUntilDone(app.server, created.json.reviewId);
+    assert.equal(job.status, 'FAILED');
+    assert.equal(job.error.code, ErrorCodes.SHARD_LIMIT_EXCEEDED);
+
+    const reportRes = await request(app.server, 'GET', `/api/reports/${created.json.reviewId}`);
+    assert.equal(reportRes.json.errors[0].code, ErrorCodes.SHARD_LIMIT_EXCEEDED);
+  } finally {
+    await app.stop({ waitMs: 5_000 });
+  }
 });

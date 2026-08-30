@@ -1,7 +1,10 @@
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { makeTempDir } from './temp-workspace.js';
 import { git, writeFile } from './temp-git-repo.js';
+import { makeBareRepo } from './temp-bare-repo.js';
+import { resolveRealPath } from '../../src/shared/path-security.js';
 import { createFakeReviewProvider } from './fake-review-provider.js';
 
 export const FAKE_OK_JSON = JSON.stringify({
@@ -167,5 +170,130 @@ export async function createPathOutsideFixture() {
     insideProject,
     outsideProjectDir,
     outsideRequirementFile
+  };
+}
+
+/**
+ * Realpath of the OS temp dir — needed as an allowedRoot when the remote Git
+ * fetcher runs in ephemeral mode (it mkdtemp's under os.tmpdir() and then
+ * asserts the result is inside allowedRoots).
+ */
+export async function realTempDir() {
+  return resolveRealPath(os.tmpdir());
+}
+
+/**
+ * AC-10 fixture: a local bare repo (acts as the remote) plus an allowed root
+ * that holds the requirement file. The fetcher runs in ephemeral mode so the
+ * cloned workspace lands under os.tmpdir(); callers must add realTempDir() to
+ * allowedRoots alongside the returned allowedRoot.
+ */
+export async function createRemoteGitFixture() {
+  const { bare, headRef } = await makeBareRepo();
+  const { allowedRoot, reportsDir } = await makeAllowedWorkspace('crs-e2e-remote-');
+  const projectDir = path.join(allowedRoot, 'placeholder');
+  await fs.mkdir(projectDir, { recursive: true });
+  const requirementFile = await writeRequirement(projectDir);
+  return { allowedRoot, reportsDir, bare, headRef, requirementFile };
+}
+
+/**
+ * AC-11 fake analyzer. Emits findings shaped like the real clang-tidy analyzer
+ * so the e2e path exercises the analyzer→PostReviewPolicy integration.
+ *
+ * @param {{ findings?: object[], throwOnce?: boolean }} [opts]
+ */
+export function createFakeAnalyzer(opts = {}) {
+  const findings = opts.findings ?? [];
+  let thrown = false;
+  return {
+    async analyze({ files }) {
+      if (opts.throwOnce && !thrown) {
+        thrown = true;
+        const { AppError } = await import('../../src/shared/app-error.js');
+        const { ErrorCodes } = await import('../../src/shared/error-codes.js');
+        throw new AppError(ErrorCodes.ANALYZER_FAILED, 'fake analyzer boom', ['fake.c']);
+      }
+      // Allow findings to be a function of the collected files for flexibility.
+      if (typeof findings === 'function') return findings(files);
+      return findings;
+    }
+  };
+}
+
+/**
+ * AC-12 fixture: a project with `fileCount` cpp files, each a single line of
+ * `charsPerFile` characters, so total characters and per-file characters are
+ * predictable for shard planning.
+ */
+export async function createShardFixture({ fileCount, charsPerFile }) {
+  const { allowedRoot, reportsDir } = await makeAllowedWorkspace('crs-e2e-shard-');
+  const projectDir = path.join(allowedRoot, 'proj');
+  await fs.mkdir(path.join(projectDir, 'src'), { recursive: true });
+  const content = 'x'.repeat(Math.max(1, charsPerFile));
+  for (let i = 0; i < fileCount; i++) {
+    await fs.writeFile(path.join(projectDir, 'src', `f${i}.cpp`), content + '\n', 'utf8');
+  }
+  const requirementFile = await writeRequirement(projectDir);
+  return { allowedRoot, reportsDir, projectDir, requirementFile };
+}
+
+/**
+ * AC-12 fake review provider that counts review calls, tracks max in-flight
+ * concurrency, and returns one finding per shard referencing the shard's
+ * first file so aggregated findings are distinguishable.
+ *
+ * @param {{ riskLevel?: string }} [opts]
+ */
+export function createShardCountingProvider(opts = {}) {
+  const riskLevel = opts.riskLevel ?? 'LOW';
+  /** @type {Array<{ files: object[], callIndex: number }>} */
+  const calls = [];
+  let inFlight = 0;
+  let maxConcurrency = 0;
+  let callIndex = 0;
+
+  return {
+    calls,
+    maxConcurrency: () => maxConcurrency,
+    async review(args) {
+      const myIndex = callIndex++;
+      calls.push({ files: args?.files ?? [], callIndex: myIndex });
+      inFlight += 1;
+      if (inFlight > maxConcurrency) maxConcurrency = inFlight;
+      // Simulate tiny async yield so concurrency>1 can actually overlap.
+      await new Promise((r) => setImmediate(r));
+      inFlight -= 1;
+      const firstFile = args?.files?.[0]?.path ?? 'src/unknown.cpp';
+      const rawOutput = JSON.stringify({
+        summary: `shard ${myIndex}`,
+        overall_risk: riskLevel,
+        findings: [
+          {
+            category: 'CORRECTNESS',
+            risk_level: riskLevel,
+            title: `shard-finding-${myIndex}`,
+            description: `finding from shard ${myIndex}`,
+            file_path: firstFile,
+            line_start: 1,
+            line_end: 1,
+            evidence: 'int x = 1',
+            requirement_reference: '',
+            fix_suggestion: '',
+            fix_code: ''
+          }
+        ],
+        evidence: [],
+        recommended_actions: []
+      });
+      return {
+        rawOutput,
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        durationMs: 0,
+        providerMetadata: { fake: true, shard: myIndex }
+      };
+    }
   };
 }

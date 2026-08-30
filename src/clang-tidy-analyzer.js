@@ -40,9 +40,14 @@ export function createClangTidyAnalyzer({
 } = {}) {
   const analyzerId = 'clang-tidy';
 
-  async function runOne(filePath, outputFile) {
+  async function runOne(filePath, outputFile, cwd) {
     const finalArgs = args.map((a) => a.replace('{file}', filePath).replace('{outputFile}', outputFile));
-    return execFile(command, finalArgs, { windowsHide: true, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
+    return execFile(command, finalArgs, {
+      windowsHide: true,
+      timeout: timeoutMs,
+      maxBuffer: 10 * 1024 * 1024,
+      ...(cwd ? { cwd } : {})
+    });
   }
 
   async function analyze({ projectDir, files, signal }) {
@@ -67,19 +72,35 @@ export function createClangTidyAnalyzer({
       );
 
       try {
-        const res = await runOne(f.path, outputFile);
+        // Run clang-tidy with cwd=projectDir and the relative path so it finds
+        // the file and echoes relative paths in its warnings; the resulting
+        // file_path then matches the relative paths used by PostReviewPolicy.
+        const res = await runOne(f.path, outputFile, projectDir);
         for (const line of String(res.stdout + '\n' + res.stderr).split(/\r?\n/)) {
           const p = parseLine(line);
           if (p) {
+            // Emit policy-compatible fields (file_path/line_start/risk_level/
+            // title/description/evidence/category) so analyzer findings flow
+            // through PostReviewPolicy.normalizeFinding and survive PF-002
+            // (scope) instead of being exempted on an empty filePath. The
+            // legacy severity/location/message fields are kept for existing
+            // unit-test assertions and downstream consumers.
             out.push({
               id: `${analyzerId}:${p.ruleId ?? 'clang-tidy'}:${p.file}:${p.line}`,
-              severity: p.severity,
-              category: p.ruleId ?? 'clang-tidy',
-              message: p.message,
-              location: { file: p.file, line: p.line, column: p.column },
               source: 'analyzer',
               analyzerId,
-              ruleId: p.ruleId
+              ruleId: p.ruleId,
+              category: 'MAINTAINABILITY',
+              risk_level: p.severity === 'major' ? 'MEDIUM' : 'LOW',
+              title: p.message,
+              description: p.message,
+              file_path: p.file,
+              line_start: p.line,
+              line_end: p.line,
+              evidence: '',
+              severity: p.severity,
+              location: { file: p.file, line: p.line, column: p.column },
+              message: p.message
             });
           }
         }
