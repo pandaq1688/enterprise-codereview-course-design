@@ -164,7 +164,7 @@ export function createReviewJobService(deps) {
       rules
     });
 
-    return { requirement, source, rules, inputHash, fetchedCleanup };
+    return { requirement, source, rules, inputHash, fetchedCleanup, projectDir };
   }
 
   /**
@@ -339,6 +339,7 @@ export function createReviewJobService(deps) {
 
       collected = await collectInputs(job.request);
       job._fetchedCleanup = collected.fetchedCleanup ?? null;
+      job.effectiveProjectDir = collected.projectDir;
       const prompt = promptBuilder({
         requirementText: collected.requirement.text,
         sourceMode: job.request.sourceMode,
@@ -363,7 +364,7 @@ export function createReviewJobService(deps) {
       let providerResult;
       try {
         providerResult = await provider.review({
-          projectDir: job.request.projectDir,
+          projectDir: job.effectiveProjectDir,
           promptFile,
           outputFile,
           timeoutMs: resolveReviewTimeoutMs(config),

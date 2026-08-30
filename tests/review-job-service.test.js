@@ -351,6 +351,43 @@ test('REMOTE_GIT: fetch then collect succeeds with sourceMode and remoteUrl in r
   assert.ok(report.source.files.some((f) => f.path === 'a.c' || f.path.endsWith('a.c')));
 });
 
+test('REMOTE_GIT: provider receives fetched localDir as projectDir', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { requirementFile } = await createProjectFixture();
+  let n = 0;
+  /** @type {string | null} */
+  let fetchedLocalDir = null;
+  const remoteGitFetcher = {
+    async fetch() {
+      const localDir = await makeTempDir('crs-remote-');
+      await fs.writeFile(path.join(localDir, 'a.c'), 'int main() { return 0; }\n', 'utf8');
+      fetchedLocalDir = localDir;
+      return { localDir };
+    }
+  };
+  /** @type {string | null | undefined} */
+  let providerProjectDir;
+  const base = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const provider = {
+    async review(args) {
+      providerProjectDir = args.projectDir;
+      return base.review(args);
+    }
+  };
+  const service = createService({
+    reportsDir,
+    provider,
+    remoteGitFetcher,
+    idFactory: () => `rgp-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(remoteGitRequest(requirementFile), { triggerType: 'MANUAL' });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+  assert.notEqual(providerProjectDir, null);
+  assert.equal(providerProjectDir, fetchedLocalDir);
+});
+
 test('REMOTE_GIT: fetch REMOTE_REF_NOT_FOUND yields FAILED report', async () => {
   const reportsDir = await makeTempDir('crs-reports-');
   const { requirementFile } = await createProjectFixture();
