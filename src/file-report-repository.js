@@ -34,6 +34,8 @@ export function createFileReportRepository({ reportsDir, idFactory = crypto.rand
         'utf8'
       );
       await fs.writeFile(path.join(tmpDir, 'report.html'), renderHtmlReport(reportToSave), 'utf8');
+      // Replace any previous report for the same reviewId (e.g. FAILED → retry SUCCEEDED).
+      await fs.rm(finalDir, { recursive: true, force: true });
       await fs.rename(tmpDir, finalDir);
     } catch {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
