@@ -13,7 +13,8 @@ const DEFAULTS = {
     maxRequirementChars: 50000,
     allowedExtensions: [
       '.c', '.cc', '.cpp', '.cxx',
-      '.h', '.hpp', '.hxx', '.java'
+      '.h', '.hpp', '.hxx', '.java',
+      '.js', '.mjs', '.cjs'
     ]
   },
   cursor: {
@@ -76,12 +77,15 @@ const FORBIDDEN_RULE_PATH_KEYS = new Set([
   'cppPath',
   'cPath',
   'javaPath',
+  'jsPath',
   'globalRulesPath',
   'cppRulesPath',
   'javaRulesPath',
+  'jsRulesPath',
   'globalRulePath',
   'cppRulePath',
-  'javaRulePath'
+  'javaRulePath',
+  'jsRulePath'
 ]);
 
 function deepMerge(base, override) {
@@ -103,8 +107,8 @@ function assertNoFixedRuleOverrides(raw) {
   const rules = raw?.rules;
   if (!rules || typeof rules !== 'object') return;
   for (const key of Object.keys(rules)) {
-    if (FORBIDDEN_RULE_PATH_KEYS.has(key) || /^(global|cpp|c|java).*path$/i.test(key)) {
-      throw new Error('禁止通过外部配置替换全局/C++/Java 固定规则路径');
+    if (FORBIDDEN_RULE_PATH_KEYS.has(key) || /^(global|cpp|c|java|js).*path$/i.test(key)) {
+      throw new Error('禁止通过外部配置替换全局/C++/Java/JS 固定规则路径');
     }
   }
 }

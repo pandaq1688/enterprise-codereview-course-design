@@ -50,8 +50,8 @@ MVP 达成以下结果即视为完成：
 1. 使用 FakeReviewProvider 的自动化端到端测试可以从两个本地路径生成 JSON 和 HTML 报告。
 2. Git 模式能同时识别暂存、未暂存和未跟踪的受支持文件。
 3. 全量模式能正确包含受支持文件并排除固定目录和二进制文件。
-4. 混合 C/C++、java 输入能自动加载对应固定规则。
-5. 用户只能替换或配置 review-checklist，不能从外部配置替换全局、 C/C++、java 规则。
+4. 混合 C/C++、Java、JavaScript 输入能自动加载对应固定规则。
+5. 用户只能替换或配置 review-checklist，不能从外部配置替换全局、 C/C++、Java、JavaScript 规则。
 6. 每个被降级、修正、合并或豁免的问题都有规则编号和中文原因。
 7. Cursor 输出非法时生成失败任务和失败报告，不伪造代码缺陷。
 8. 真实 Cursor 的人工验收能够完成一次审查并显示报告。
@@ -73,8 +73,8 @@ MVP 达成以下结果即视为完成：
 - 本地需求 Markdown 路径输入。
 - Git 变更模式。
 - 全量目录模式。
-- C、C++ 和 Java 源文件。
-- 固定全局、C/C++、Java 规则。
+- C、C++、Java 和 JavaScript 源文件。
+- 固定全局、C/C++、Java、JavaScript 规则。
 - 可配置 review-checklist。
 - 本机 Cursor Agent Provider。
 - 异步任务状态。
@@ -93,7 +93,7 @@ MVP 达成以下结果即视为完成：
 - 邮件、企微和其他通知。
 - Bug 自动提交或工单回写。
 - 消息队列和分布式 Worker。
-- SQL、XML、Lua、JavaScript 等额外语言或文件类型。
+- SQL、XML、Lua 等额外语言或文件类型。
 - 自动修复、自动提交和自动合并。
 
 ### 4.3 必做扩展点
@@ -213,6 +213,7 @@ Domain 不读取文件、不启动进程、不访问 HTTP。Application 负责�
 - 始终加载固定全局规则。
 - 输入包含 C/C++文件时加载固定 C/C++ 规则。
 - 输入包含 Java 文件时加载固定 Java 规则。
+- 输入包含 JavaScript 文件时加载固定 JavaScript 规则。
 - 根据 includePaths 和 excludePaths 判断是否加载 review-checklist。
 - 对规则内容计算 SHA-256。
 - 输出规则与匹配文件的可追溯清单。
@@ -331,6 +332,7 @@ MVP 固定支持：
 - C：.c
 - C++：.cc、.cpp、.cxx、.h、.hpp、.hxx
 - Java：.java
+- JavaScript：.js、.mjs、.cjs
 
 扩展名比较不区分大小写。没有扩展名或不在列表中的文件不进入审查。
 
@@ -435,7 +437,24 @@ inputHash 用于报告追溯和后续定时任务去重，不用于安全签名�
 
 删除原规则中的固定数据库方言、固定目录名称和企业内部约定。
 
-### 9.4 可配置 review-checklist
+### 9.4 固定 JavaScript 规则
+
+精简规则只保留通用高价值项：
+
+- 空值与可选链误用、隐式类型转换、`==` 与 `===`。
+- 异步正确性：未 await、未捕获的 Promise rejection、竞态与回调时序。
+- 资源关闭：文件句柄、流、定时器、监听器与连接的生命周期。
+- 闭包变量捕获、循环中的异步引用、`this` 绑定与箭头函数误用。
+- 原型链污染、`__proto__` 注入、不受信的 `eval`/`Function`/动态属性访问。
+- 命令注入：`child_process` 的 shell 拼接、`exec` 与未分隔的 argv。
+- 路径穿越：`path.join`/`path.resolve` 后未做根目录越界校验、符号链接逃逸。
+- 正则灾难性回溯与未转义的输入拼接。
+- 未校验的外部输入长度、类型与结构。
+- 并发控制：信号量、互斥与限流是否正确释放与归还。
+
+删除原规则中的项目专属命名约定或未在输入中出现的约定。
+
+### 9.5 可配置 review-checklist
 
 review-checklist 是唯一允许自由配置的审查规则：
 
@@ -447,14 +466,14 @@ review-checklist 是唯一允许自由配置的审查规则：
 
 默认 checklist 精简保留并发、内存边界、外部输入、错误处理、资源生命周期和控制流检查。
 
-全局、C/C++ 和 Java 规则路径不出现在外部配置中，由 RuleResolver 固定引用。这里的“只有 checklist 可配置”只限制审查规则；端口、允许根目录、超时和输入上限等运行参数仍可配置。
+全局、C/C++、Java 和 JavaScript 规则路径不出现在外部配置中，由 RuleResolver 固定引用。这里的“只有 checklist 可配置”只限制审查规则；端口、允许根目录、超时和输入上限等运行参数仍可配置。
 
-### 9.5 规则追溯
+### 9.6 规则追溯
 
 报告中每条生效规则记录：
 
 - ruleId。
-- ruleType：GLOBAL、CPP、JAVA 或 CHECKLIST。
+- ruleType：GLOBAL、CPP、JAVA、JS 或 CHECKLIST。
 - builtIn。
 - contentHash。
 - matchPaths。
@@ -837,10 +856,10 @@ MVP 不自动重试 Cursor。用户可以在页面重新运行任务。这样可
 
 ### AC-02 全量混合语言
 
-给定包含 C++、Java 和不支持文件的目录：
+给定包含 C++、Java、JavaScript 和不支持文件的目录：
 
 - 只采集受支持文件。
-- 同时装配 C++ 和 Java 规则。
+- 同时装配 C++、Java 和 JavaScript 规则。
 - 不支持文件不进入 Prompt。
 
 ### AC-03 checklist 可配置

@@ -10,6 +10,9 @@ test('languageFromFileName maps supported extensions case-insensitively', () => 
   assert.equal(languageFromFileName('a.C'), 'C');
   assert.equal(languageFromFileName('Foo.CPP'), 'CPP');
   assert.equal(languageFromFileName('Bar.Java'), 'JAVA');
+  assert.equal(languageFromFileName('app.js'), 'JS');
+  assert.equal(languageFromFileName('module.MJS'), 'JS');
+  assert.equal(languageFromFileName('config.CJS'), 'JS');
   assert.equal(languageFromFileName('readme.md'), null);
   assert.equal(languageFromFileName('Makefile'), null);
 });

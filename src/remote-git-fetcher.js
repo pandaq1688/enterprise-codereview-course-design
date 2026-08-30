@@ -17,7 +17,7 @@ export function repoNameFromUrl(url) {
 function classifyGitError(stderr) {
   const s = String(stderr ?? '');
   if (/Authentication failed|Invalid username|403|401|not authorized/i.test(s)) return ErrorCodes.REMOTE_AUTH_FAILED;
-  if (/pathspec|did not match|ref .* does not exist|unknown revision/i.test(s)) return ErrorCodes.REMOTE_REF_NOT_FOUND;
+  if (/pathspec|did not match|ref .* does not exist|unknown revision|invalid reference|couldn't find remote ref/i.test(s)) return ErrorCodes.REMOTE_REF_NOT_FOUND;
   return ErrorCodes.REMOTE_FETCH_FAILED;
 }
 
@@ -66,11 +66,11 @@ export function createRemoteGitFetcher({ workspaceDir, ephemeral, fetchRetries, 
     try {
       const exists = await fs.stat(path.join(localDir, '.git')).then(() => true).catch(() => false);
       if (exists) {
-        await runGit([...extraArgs, 'fetch', remoteUrl, ref], { cwd: localDir, env, retries: fetchRetries });
-        await runGit(['checkout', ref], { cwd: localDir, env, retries: 0 });
+        await runGit([...extraArgs, 'fetch', '--', remoteUrl, ref], { cwd: localDir, env, retries: fetchRetries });
+        await runGit(['switch', '--detach', '--', ref], { cwd: localDir, env, retries: 0 });
       } else {
-        await runGit([...extraArgs, 'clone', remoteUrl, localDir], { cwd: process.cwd(), env, retries: fetchRetries });
-        await runGit(['checkout', ref], { cwd: localDir, env, retries: 0 });
+        await runGit([...extraArgs, 'clone', '--', remoteUrl, localDir], { cwd: process.cwd(), env, retries: fetchRetries });
+        await runGit(['switch', '--detach', '--', ref], { cwd: localDir, env, retries: 0 });
       }
       const real = await resolveRealPath(localDir);
       if (allowedRoots) assertInsideAllowedRoots(real, allowedRoots, localDir);

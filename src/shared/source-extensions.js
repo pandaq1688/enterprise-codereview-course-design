@@ -1,6 +1,7 @@
 const CPP_EXT = new Set(['.cc', '.cpp', '.cxx', '.h', '.hpp', '.hxx']);
+const JS_EXT = new Set(['.js', '.mjs', '.cjs']);
 
-export const SUPPORTED_EXTENSIONS = ['.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.hxx', '.java'];
+export const SUPPORTED_EXTENSIONS = ['.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.hxx', '.java', '.js', '.mjs', '.cjs'];
 
 export const EXCLUDED_DIR_NAMES = new Set([
   '.git', 'node_modules', 'dist', 'build', 'out', 'target', 'coverage', 'reports', 'logs'
@@ -11,6 +12,7 @@ export function languageFromFileName(name) {
   if (ext === '.c') return 'C';
   if (CPP_EXT.has(ext)) return 'CPP';
   if (ext === '.java') return 'JAVA';
+  if (JS_EXT.has(ext)) return 'JS';
   return null;
 }
 

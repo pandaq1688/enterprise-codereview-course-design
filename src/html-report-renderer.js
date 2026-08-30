@@ -1,4 +1,5 @@
 import { htmlEscape } from './shared/html-escape.js';
+import { formatLocalTime } from './shared/time-format.js';
 
 /**
  * @param {unknown} value
@@ -158,8 +159,8 @@ export function renderHtmlReport(report) {
   <dt>需求</dt><dd>${e(request.requirementFileDisplay)}</dd>
   <dt>审查 ID</dt><dd>${e(report.reviewId)}</dd>
   <dt>状态</dt><dd>${e(report.status)}</dd>
-  <dt>创建时间</dt><dd>${e(report.createdAt)}</dd>
-  <dt>完成时间</dt><dd>${e(report.completedAt)}</dd>
+  <dt>创建时间</dt><dd>${e(formatLocalTime(report.createdAt))}</dd>
+  <dt>完成时间</dt><dd>${e(formatLocalTime(report.completedAt))}</dd>
   <dt>耗时</dt><dd>${e(report.durationMs)} ms</dd>
   <dt>最终风险</dt><dd>${e(result.overallRisk)}</dd>
 </dl>

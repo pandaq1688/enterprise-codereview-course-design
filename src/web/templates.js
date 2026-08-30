@@ -1,4 +1,5 @@
 import { htmlEscape } from '../shared/html-escape.js';
+import { formatLocalTime } from '../shared/time-format.js';
 
 /**
  * Escape dynamic text for safe HTML insertion.
@@ -34,7 +35,7 @@ function renderHistoryRows(summaries) {
   return summaries
     .map(
       (s) => `<tr>
-  <td>${e(s.createdAt)}</td>
+  <td>${e(formatLocalTime(s.createdAt))}</td>
   <td>${e(s.projectName)}</td>
   <td>${e(s.sourceMode)}</td>
   <td>${e(s.status)}</td>

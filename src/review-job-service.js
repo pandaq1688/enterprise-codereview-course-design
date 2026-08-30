@@ -226,7 +226,7 @@ export function createReviewJobService(deps) {
       remoteUrl: req.remoteUrl ?? null
     };
     if (includeAbs) {
-      request.projectDir = req.projectDir;
+      request.projectDir = req.projectDir ?? job.effectiveProjectDir ?? null;
       request.requirementFile = req.requirementFile;
       if (req.checklist?.path) {
         request.checklistPath = req.checklist.path;
@@ -477,6 +477,7 @@ export function createReviewJobService(deps) {
         let mergedModel = null;
         const rawOutputs = [];
         const stderrParts = [];
+        let parseError = null;
         for (const res of shardResults) {
           const shardRaw = truncate(res.rawOutput ?? '', maxOutputChars);
           rawOutputs.push(shardRaw);
@@ -484,20 +485,18 @@ export function createReviewJobService(deps) {
           totalDurationMs += res.durationMs ?? 0;
           if (res.exitCode) mergedExitCode = res.exitCode;
           mergedModel = mergedModel ?? res.providerMetadata?.model ?? null;
-          const shardParsed = parser(shardRaw);
-          allFindings.push(...shardParsed.findings);
-          if (shardParsed.summary) mergedSummary = mergedSummary || shardParsed.summary;
-          mergedOverallRisk = maxRisk(mergedOverallRisk, shardParsed.overall_risk);
-          allRecommendedActions.push(...(shardParsed.recommended_actions ?? []));
-          allEvidence.push(...(shardParsed.evidence ?? []));
+          try {
+            const shardParsed = parser(shardRaw);
+            allFindings.push(...shardParsed.findings);
+            if (shardParsed.summary) mergedSummary = mergedSummary || shardParsed.summary;
+            mergedOverallRisk = maxRisk(mergedOverallRisk, shardParsed.overall_risk);
+            allRecommendedActions.push(...(shardParsed.recommended_actions ?? []));
+            allEvidence.push(...(shardParsed.evidence ?? []));
+          } catch (err) {
+            parseError = err;
+            break;
+          }
         }
-        parsed = {
-          summary: mergedSummary,
-          overall_risk: mergedOverallRisk,
-          findings: allFindings,
-          evidence: allEvidence,
-          recommended_actions: allRecommendedActions
-        };
         providerResult = {
           rawOutput: rawOutputs.join('\n--- shard ---\n'),
           durationMs: totalDurationMs,
@@ -511,6 +510,30 @@ export function createReviewJobService(deps) {
           files: s.files.map((f) => ({ path: f.path })),
           charCount: s.charCount
         }));
+        if (parseError) {
+          const entry = toErrorEntry(parseError);
+          await persistReport(
+            job,
+            collected,
+            emptyAi({
+              durationMs: providerResult.durationMs ?? 0,
+              exitCode: providerResult.exitCode ?? null,
+              rawOutput,
+              stderrSummary: truncate(providerResult.stderr ?? '', 2000)
+            }),
+            emptyResult(),
+            [entry],
+            'FAILED'
+          );
+          return;
+        }
+        parsed = {
+          summary: mergedSummary,
+          overall_risk: mergedOverallRisk,
+          findings: allFindings,
+          evidence: allEvidence,
+          recommended_actions: allRecommendedActions
+        };
       } else {
         try {
           providerResult = await provider.review({

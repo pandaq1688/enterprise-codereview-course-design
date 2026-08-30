@@ -9,7 +9,8 @@ const CHECKLIST_MAX_CHARS = 80000;
 const BUILTIN_FILES = Object.freeze({
   GLOBAL: 'global-review.md',
   CPP: 'cpp-review.md',
-  JAVA: 'java-review.md'
+  JAVA: 'java-review.md',
+  JS: 'js-review.md'
 });
 
 /**
@@ -58,7 +59,7 @@ async function readRuleFile(filePath, ruleLabel = filePath) {
 /**
  * @param {object} opts
  * @param {string} opts.ruleId
- * @param {'GLOBAL'|'CPP'|'JAVA'|'CHECKLIST'} opts.ruleType
+ * @param {'GLOBAL'|'CPP'|'JAVA'|'JS'|'CHECKLIST'} opts.ruleType
  * @param {boolean} opts.builtIn
  * @param {string} opts.content
  * @param {string[]} opts.matchPaths
@@ -136,6 +137,21 @@ export async function resolveRules({ projectDir, files, checklist, rulesDir }) {
         content,
         matchPaths: javaFiles,
         matchedFiles: javaFiles
+      })
+    );
+  }
+
+  const jsFiles = inputFiles.filter((f) => f.language === 'JS').map((f) => f.path);
+  if (jsFiles.length > 0) {
+    const content = await readRuleFile(path.join(dir, BUILTIN_FILES.JS), BUILTIN_FILES.JS);
+    rules.push(
+      toResolvedRule({
+        ruleId: 'JS',
+        ruleType: 'JS',
+        builtIn: true,
+        content,
+        matchPaths: jsFiles,
+        matchedFiles: jsFiles
       })
     );
   }

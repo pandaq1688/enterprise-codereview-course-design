@@ -53,6 +53,7 @@ export function buildPrompt({ requirementText, sourceMode, files, contents, rule
   const globalRules = ruleList.filter((r) => r.ruleType === 'GLOBAL').map((r) => r.content);
   const cppRules = ruleList.filter((r) => r.ruleType === 'CPP').map((r) => r.content);
   const javaRules = ruleList.filter((r) => r.ruleType === 'JAVA').map((r) => r.content);
+  const jsRules = ruleList.filter((r) => r.ruleType === 'JS').map((r) => r.content);
   const checklistRules = ruleList.filter((r) => r.ruleType === 'CHECKLIST').map((r) => r.content);
 
   const scopeLines = [
@@ -70,6 +71,9 @@ export function buildPrompt({ requirementText, sourceMode, files, contents, rule
   }
   if (javaRules.length > 0) {
     languageRuleBlocks.push('### Java', ...javaRules);
+  }
+  if (jsRules.length > 0) {
+    languageRuleBlocks.push('### JavaScript', ...jsRules);
   }
 
   const sourceBlocks = fileList.map((f) => {

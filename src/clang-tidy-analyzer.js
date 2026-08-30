@@ -42,13 +42,14 @@ export function createClangTidyAnalyzer({
 } = {}) {
   const analyzerId = 'clang-tidy';
 
-  async function runOne(filePath, outputFile, cwd) {
+  async function runOne(filePath, outputFile, cwd, signal) {
     const finalArgs = args.map((a) => a.replace('{file}', filePath).replace('{outputFile}', outputFile));
     return execFile(command, finalArgs, {
       windowsHide: true,
       timeout: timeoutMs,
       maxBuffer: 10 * 1024 * 1024,
-      ...(cwd ? { cwd } : {})
+      ...(cwd ? { cwd } : {}),
+      ...(signal ? { signal } : {})
     });
   }
 
@@ -81,7 +82,7 @@ export function createClangTidyAnalyzer({
         // Run clang-tidy with cwd=projectDir and the relative path so it finds
         // the file and echoes relative paths in its warnings; the resulting
         // file_path then matches the relative paths used by PostReviewPolicy.
-        const res = await runOne(f.path, outputFile, projectDir);
+        const res = await runOne(f.path, outputFile, projectDir, signal);
         for (const line of String(res.stdout + '\n' + res.stderr).split(/\r?\n/)) {
           const p = parseLine(line);
           if (p) {

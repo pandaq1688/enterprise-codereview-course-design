@@ -11,15 +11,17 @@ test('always loads global rules and language rules only when those files exist i
     projectDir: '/proj',
     files: [
       { path: 'src/a.cpp', language: 'CPP' },
-      { path: 'src/B.java', language: 'JAVA' }
+      { path: 'src/B.java', language: 'JAVA' },
+      { path: 'src/app.js', language: 'JS' }
     ],
     checklist: { enabled: false, path: null, includePaths: ['.'], excludePaths: [] },
     rulesDir
   });
   const types = resolved.rules.map((r) => r.ruleType).sort();
-  assert.deepEqual(types, ['CPP', 'GLOBAL', 'JAVA']);
+  assert.deepEqual(types, ['CPP', 'GLOBAL', 'JAVA', 'JS']);
   assert.equal(resolved.rules.find((r) => r.ruleType === 'GLOBAL').builtIn, true);
   assert.ok(resolved.rules.find((r) => r.ruleType === 'CPP').matchedFiles.includes('src/a.cpp'));
+  assert.ok(resolved.rules.find((r) => r.ruleType === 'JS').matchedFiles.includes('src/app.js'));
 });
 
 test('loads checklist only for includePaths minus excludePaths', async () => {

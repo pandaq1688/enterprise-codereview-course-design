@@ -13,7 +13,8 @@
     "maxRequirementChars": 50000,
     "allowedExtensions": [
       ".c", ".cc", ".cpp", ".cxx",
-      ".h", ".hpp", ".hxx", ".java"
+      ".h", ".hpp", ".hxx", ".java",
+      ".js", ".mjs", ".cjs"
     ]
   },
   "cursor": {
