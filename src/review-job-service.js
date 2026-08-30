@@ -5,6 +5,13 @@ import { AppError } from './shared/app-error.js';
 import { ErrorCodes } from './shared/error-codes.js';
 import { sha256Text } from './shared/hash.js';
 import { PROMPT_SCHEMA_VERSION, REPORT_SCHEMA_VERSION } from './shared/versions.js';
+import { createSemaphore } from './semaphore.js';
+import { planShards } from './shard-planner.js';
+
+const RISK_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+function maxRisk(a, b) {
+  return RISK_RANK[a] >= RISK_RANK[b] ? a : b;
+}
 
 /**
  * @param {{
@@ -158,9 +165,9 @@ export function createReviewJobService(deps) {
 
     const collectOpts = {
       projectDir,
-      maxFiles: limits.maxFiles,
-      maxFileChars: limits.maxFileChars,
-      maxInputChars: limits.maxInputChars
+      maxFiles: Infinity,
+      maxFileChars: Infinity,
+      maxInputChars: Infinity
     };
 
     const source =
@@ -379,58 +386,149 @@ export function createReviewJobService(deps) {
         message: job.request.projectName
       });
 
-      let providerResult;
-      try {
-        providerResult = await provider.review({
-          projectDir: job.effectiveProjectDir,
-          promptFile,
-          outputFile,
-          timeoutMs: resolveReviewTimeoutMs(config),
-          signal: currentAbort.signal
+      // Ruling: source-limit enforcement moved from collectors into JobService.
+      // Collectors were called with relaxed (Infinity) limits, so they never
+      // throw on source count/size. Exceeding limits now auto-shards.
+      const limits = config.review;
+      const totalCharacters = collected.source.files.reduce(
+        (s, f) => s + String(collected.source.contents?.[f.path] ?? '').length,
+        0
+      );
+      const exceeds =
+        collected.source.files.length > limits.maxFiles ||
+        totalCharacters > limits.maxInputChars;
+
+      let shards = null;
+      if (exceeds || config.sharding?.enabled) {
+        const planned = planShards({
+          files: collected.source.files,
+          contents: collected.source.contents,
+          shardChars: config.sharding.shardChars,
+          maxShards: config.sharding.maxShards
         });
-      } catch (err) {
-        const entry = toErrorEntry(err);
-        const rawOutput =
-          err && typeof err === 'object' && 'rawOutput' in err
-            ? truncate(/** @type {{ rawOutput?: string }} */ (err).rawOutput, maxOutputChars)
-            : '';
-        await persistReport(
-          job,
-          collected,
-          emptyAi({
-            durationMs: Math.max(0, clock.now().getTime() - started.getTime()),
-            rawOutput,
-            stderrSummary: truncate(err instanceof Error ? err.message : String(err), 2000)
-          }),
-          emptyResult(),
-          [entry],
-          'FAILED'
-        );
-        return;
+        shards = planned.shards;
       }
 
-      const rawOutput = truncate(providerResult.rawOutput ?? '', maxOutputChars);
-
-      setStatus(job, 'FILTERING');
+      let providerResult;
       let parsed;
-      try {
-        parsed = parser(rawOutput);
-      } catch (err) {
-        const entry = toErrorEntry(err);
-        await persistReport(
-          job,
-          collected,
-          emptyAi({
-            durationMs: providerResult.durationMs ?? 0,
-            exitCode: providerResult.exitCode ?? null,
-            rawOutput,
-            stderrSummary: truncate(providerResult.stderr ?? '', 2000)
-          }),
-          emptyResult(),
-          [entry],
-          'FAILED'
+      let rawOutput;
+      let aiShards;
+
+      if (shards && shards.length > 1) {
+        const sem = createSemaphore(config.sharding.maxConcurrency);
+        const shardResults = await Promise.all(
+          shards.map((shard) =>
+            sem.run(() =>
+              provider.review({
+                projectDir: job.effectiveProjectDir,
+                promptFile,
+                outputFile,
+                timeoutMs: resolveReviewTimeoutMs(config),
+                signal: currentAbort.signal,
+                files: shard.files
+              })
+            )
+          )
         );
-        return;
+        job._shards = shards;
+
+        setStatus(job, 'FILTERING');
+        const allFindings = [];
+        const allRecommendedActions = [];
+        const allEvidence = [];
+        let mergedSummary = '';
+        let mergedOverallRisk = 'LOW';
+        let totalDurationMs = 0;
+        let mergedExitCode = 0;
+        let mergedModel = null;
+        const rawOutputs = [];
+        const stderrParts = [];
+        for (const res of shardResults) {
+          const shardRaw = truncate(res.rawOutput ?? '', maxOutputChars);
+          rawOutputs.push(shardRaw);
+          stderrParts.push(res.stderr ?? '');
+          totalDurationMs += res.durationMs ?? 0;
+          if (res.exitCode) mergedExitCode = res.exitCode;
+          mergedModel = mergedModel ?? res.providerMetadata?.model ?? null;
+          const shardParsed = parser(shardRaw);
+          allFindings.push(...shardParsed.findings);
+          if (shardParsed.summary) mergedSummary = mergedSummary || shardParsed.summary;
+          mergedOverallRisk = maxRisk(mergedOverallRisk, shardParsed.overall_risk);
+          allRecommendedActions.push(...(shardParsed.recommended_actions ?? []));
+          allEvidence.push(...(shardParsed.evidence ?? []));
+        }
+        parsed = {
+          summary: mergedSummary,
+          overall_risk: mergedOverallRisk,
+          findings: allFindings,
+          evidence: allEvidence,
+          recommended_actions: allRecommendedActions
+        };
+        providerResult = {
+          rawOutput: rawOutputs.join('\n--- shard ---\n'),
+          durationMs: totalDurationMs,
+          exitCode: mergedExitCode,
+          stderr: stderrParts.join('\n'),
+          providerMetadata: { model: mergedModel }
+        };
+        rawOutput = truncate(providerResult.rawOutput ?? '', maxOutputChars);
+        aiShards = shards.map((s) => ({
+          index: s.index,
+          files: s.files.map((f) => ({ path: f.path })),
+          charCount: s.charCount
+        }));
+      } else {
+        try {
+          providerResult = await provider.review({
+            projectDir: job.effectiveProjectDir,
+            promptFile,
+            outputFile,
+            timeoutMs: resolveReviewTimeoutMs(config),
+            signal: currentAbort.signal
+          });
+        } catch (err) {
+          const entry = toErrorEntry(err);
+          const errRawOutput =
+            err && typeof err === 'object' && 'rawOutput' in err
+              ? truncate(/** @type {{ rawOutput?: string }} */ (err).rawOutput, maxOutputChars)
+              : '';
+          await persistReport(
+            job,
+            collected,
+            emptyAi({
+              durationMs: Math.max(0, clock.now().getTime() - started.getTime()),
+              rawOutput: errRawOutput,
+              stderrSummary: truncate(err instanceof Error ? err.message : String(err), 2000)
+            }),
+            emptyResult(),
+            [entry],
+            'FAILED'
+          );
+          return;
+        }
+
+        rawOutput = truncate(providerResult.rawOutput ?? '', maxOutputChars);
+
+        setStatus(job, 'FILTERING');
+        try {
+          parsed = parser(rawOutput);
+        } catch (err) {
+          const entry = toErrorEntry(err);
+          await persistReport(
+            job,
+            collected,
+            emptyAi({
+              durationMs: providerResult.durationMs ?? 0,
+              exitCode: providerResult.exitCode ?? null,
+              rawOutput,
+              stderrSummary: truncate(providerResult.stderr ?? '', 2000)
+            }),
+            emptyResult(),
+            [entry],
+            'FAILED'
+          );
+          return;
+        }
       }
 
       const aiFindings = parsed.findings;
@@ -486,7 +584,8 @@ export function createReviewJobService(deps) {
         model: providerResult.providerMetadata?.model ?? null,
         rawOverallRisk: parsed.overall_risk,
         rawOutput,
-        stderrSummary: truncate(providerResult.stderr ?? '', 2000)
+        stderrSummary: truncate(providerResult.stderr ?? '', 2000),
+        ...(aiShards ? { shards: aiShards } : {})
       });
 
       await persistReport(job, collected, aiPart, resultPart, [], 'SUCCEEDED');

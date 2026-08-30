@@ -712,3 +712,307 @@ test('unexpected non-AppError failures map to INTERNAL_ERROR with generic Chines
   assert.equal(report.errors[0].code, 'INTERNAL_ERROR');
   assert.ok(!report.errors[0].message.includes('secret'));
 });
+
+// ---------- Task 9: sharding ----------
+
+/**
+ * FakeReviewProvider variant that counts review calls, tracks max
+ * concurrency, and returns per-call raw output (so each shard can return
+ * distinct findings).
+ *
+ * @param {{
+ *   rawOutputForCall?: (callNum: number, args: object) => string,
+ *   delayMs?: number,
+ *   throwErrorOnCall?: { call: number, error: Error } | null
+ * }} opts
+ */
+function createShardCountingProvider(opts = {}) {
+  const { rawOutputForCall, delayMs = 0, throwErrorOnCall = null } = opts;
+  let calls = 0;
+  let maxConcurrent = 0;
+  let inFlight = 0;
+  const provider = {
+    async review(args) {
+      calls += 1;
+      const callNum = calls;
+      inFlight += 1;
+      maxConcurrent = Math.max(maxConcurrent, inFlight);
+      try {
+        if (delayMs > 0) {
+          await new Promise((r) => setTimeout(r, delayMs));
+        }
+        if (throwErrorOnCall && callNum === throwErrorOnCall.call) {
+          throw throwErrorOnCall.error;
+        }
+        const raw =
+          typeof rawOutputForCall === 'function'
+            ? rawOutputForCall(callNum, args)
+            : HIGH_FINDING_JSON;
+        return {
+          rawOutput: raw,
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          durationMs: 0,
+          providerMetadata: { fake: true }
+        };
+      } finally {
+        inFlight -= 1;
+      }
+    }
+  };
+  Object.defineProperty(provider, 'calls', { get: () => calls });
+  Object.defineProperty(provider, 'maxConcurrent', { get: () => maxConcurrent });
+  return provider;
+}
+
+function shardFindingsJson(callNum, filePath = 'src/f0.cpp') {
+  return JSON.stringify({
+    summary: `shard ${callNum} summary`,
+    overall_risk: 'HIGH',
+    findings: [
+      {
+        category: 'CORRECTNESS',
+        risk_level: 'HIGH',
+        title: `shard-${callNum} finding`,
+        description: `desc ${callNum}`,
+        file_path: filePath,
+        line_start: callNum,
+        line_end: callNum,
+        evidence: 'p->x 且 p 未判空',
+        requirement_reference: '',
+        fix_suggestion: '',
+        fix_code: ''
+      }
+    ],
+    evidence: [],
+    recommended_actions: []
+  });
+}
+
+async function createLargeProjectFixture({
+  fileCount = 3,
+  linesPerFile = 100,
+  lineContent = 'x'.repeat(20)
+}) {
+  const projectDir = await makeTempDir('crs-proj-');
+  await fs.mkdir(path.join(projectDir, 'src'), { recursive: true });
+  for (let i = 0; i < fileCount; i++) {
+    const content = Array.from({ length: linesPerFile }, () => lineContent).join('\n') + '\n';
+    await fs.writeFile(path.join(projectDir, 'src', `f${i}.cpp`), content, 'utf8');
+  }
+  const requirementFile = path.join(projectDir, 'req.md');
+  await fs.writeFile(requirementFile, '# 需求\n返回 0\n', 'utf8');
+  return { projectDir, requirementFile };
+}
+
+function shardingConfig(reportsDir, overrides = {}) {
+  return {
+    ...defaultConfig(reportsDir),
+    sharding: {
+      enabled: false,
+      shardChars: 3000,
+      maxShards: 20,
+      maxConcurrency: 2,
+      ...overrides
+    }
+  };
+}
+
+test('sharding: exceeds maxInputChars auto-shards, aggregates findings, review called >= 2', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createLargeProjectFixture({});
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: (callNum) => shardFindingsJson(callNum)
+  });
+  const config = shardingConfig(reportsDir, {
+    shardChars: 3000,
+    maxShards: 20,
+    maxConcurrency: 2
+  });
+  config.review.maxInputChars = 4000; // total ~8100 > 4000 -> exceeds
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `sh-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+  assert.ok(provider.calls >= 2, `expected >= 2 review calls, got ${provider.calls}`);
+
+  const report = await service.getReport(reviewId);
+  const titles = report.result.findings.map((f) => f.title);
+  for (let i = 1; i <= provider.calls; i++) {
+    assert.ok(titles.includes(`shard-${i} finding`), `missing shard-${i} finding`);
+  }
+  assert.ok(Array.isArray(report.ai.shards), 'ai.shards must be array');
+  assert.equal(report.ai.shards.length, provider.calls);
+});
+
+test('sharding: not exceeding + enabled=false -> single review call (regression)', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: () => HIGH_FINDING_JSON
+  });
+  const service = createService({
+    reportsDir,
+    provider,
+    config: defaultConfig(reportsDir),
+    idFactory: () => `sr-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+  assert.equal(provider.calls, 1);
+  const report = await service.getReport(reviewId);
+  assert.equal(report.ai.shards, undefined);
+});
+
+test('sharding: not exceeding + enabled=true + maxConcurrency=2 -> review called === shard count, concurrency <= 2', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createLargeProjectFixture({});
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: (callNum) => shardFindingsJson(callNum),
+    delayMs: 30
+  });
+  const config = shardingConfig(reportsDir, {
+    enabled: true,
+    shardChars: 3000,
+    maxShards: 20,
+    maxConcurrency: 2
+  });
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `se-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+  assert.ok(provider.calls >= 2, `expected >= 2 shards, got ${provider.calls}`);
+  assert.ok(provider.maxConcurrent <= 2, `concurrency ${provider.maxConcurrent} > 2`);
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.ai.shards.length, provider.calls);
+});
+
+test('sharding: shard count > maxShards -> FAILED SHARD_LIMIT_EXCEEDED', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createLargeProjectFixture({});
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: () => HIGH_FINDING_JSON
+  });
+  const config = shardingConfig(reportsDir, {
+    shardChars: 3000,
+    maxShards: 1,
+    maxConcurrency: 2
+  });
+  config.review.maxInputChars = 4000; // forces exceeds -> 3 shards > maxShards=1
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `sm-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'FAILED');
+  assert.equal(job.error.code, ErrorCodes.SHARD_LIMIT_EXCEEDED);
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.errors[0].code, ErrorCodes.SHARD_LIMIT_EXCEEDED);
+});
+
+test('sharding: single shard provider failure -> task FAILED, error code propagated', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createLargeProjectFixture({});
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: (callNum) => shardFindingsJson(callNum),
+    throwErrorOnCall: {
+      call: 2,
+      error: new AppError(ErrorCodes.CURSOR_TIMEOUT, '超时', [])
+    }
+  });
+  const config = shardingConfig(reportsDir, {
+    shardChars: 3000,
+    maxShards: 20,
+    maxConcurrency: 2
+  });
+  config.review.maxInputChars = 4000;
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `sf-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'FAILED');
+  assert.equal(job.error.code, ErrorCodes.CURSOR_TIMEOUT);
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.errors[0].code, ErrorCodes.CURSOR_TIMEOUT);
+});
+
+test('sharding: report ai.shards entries have {index, files:[{path}], charCount}', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createLargeProjectFixture({});
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: (callNum) => shardFindingsJson(callNum)
+  });
+  const config = shardingConfig(reportsDir, {
+    shardChars: 3000,
+    maxShards: 20,
+    maxConcurrency: 2
+  });
+  config.review.maxInputChars = 4000;
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `ss-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+
+  const report = await service.getReport(reviewId);
+  const shards = report.ai.shards;
+  assert.ok(Array.isArray(shards) && shards.length >= 2);
+  for (const s of shards) {
+    assert.ok(typeof s.index === 'number');
+    assert.ok(Array.isArray(s.files) && s.files.length >= 1);
+    for (const f of s.files) {
+      assert.ok(typeof f.path === 'string');
+    }
+    assert.ok(typeof s.charCount === 'number' && s.charCount > 0);
+  }
+});
