@@ -8,6 +8,20 @@ const execFile = promisify(cb);
 const C_CPP = new Set(['.c', '.cpp', '.cc', '.cxx', '.h', '.hpp']);
 const SEVERITY_MAP = { warning: 'minor', error: 'major' };
 
+function logAnalyzerSkipped(logger, message) {
+  if (!logger) return;
+  if (typeof logger.log === 'function') {
+    logger.log({
+      level: 'warn',
+      event: ErrorCodes.ANALYZER_SKIPPED,
+      errorCode: ErrorCodes.ANALYZER_SKIPPED,
+      message
+    });
+    return;
+  }
+  logger.warn?.(`[${ErrorCodes.ANALYZER_SKIPPED}] ${message}`);
+}
+
 function parseLine(line) {
   const m = String(line).match(/^([^:]+):(\d+):(\d+):\s*(\w+):\s*(.+?)(?:\s\[([^\]]+)\])?\s*$/);
   if (!m) return null;
@@ -33,14 +47,14 @@ export function createClangTidyAnalyzer({
 
   async function analyze({ projectDir, files, signal }) {
     if (signal?.aborted) {
-      logger?.warn?.('analyzer skipped: aborted');
+      logAnalyzerSkipped(logger, '分析器已中止，跳过');
       return [];
     }
 
     const out = [];
     for (const f of files) {
       if (signal?.aborted) {
-        logger?.warn?.('analyzer skipped: aborted');
+        logAnalyzerSkipped(logger, '分析器已中止，跳过');
         return out;
       }
 
@@ -71,7 +85,7 @@ export function createClangTidyAnalyzer({
         }
       } catch (err) {
         if (signal?.aborted) {
-          logger?.warn?.('analyzer skipped: aborted');
+          logAnalyzerSkipped(logger, '分析器已中止，跳过');
           return out;
         }
 
@@ -80,7 +94,7 @@ export function createClangTidyAnalyzer({
         if (onAnalyzerError === 'fail' || isTimeout) {
           throw new AppError(ErrorCodes.ANALYZER_FAILED, 'clang-tidy 执行失败', [f.path, String(err.message ?? err)]);
         }
-        logger?.warn?.(`analyzer skipped ${f.path}: ${err.message ?? err}`);
+        logAnalyzerSkipped(logger, `跳过 ${f.path}：${err.message ?? err}`);
       }
     }
 

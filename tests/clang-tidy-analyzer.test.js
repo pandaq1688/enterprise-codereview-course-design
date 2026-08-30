@@ -67,7 +67,8 @@ test('fail mode with onAnalyzerError skip returns empty and logs skip', async ()
 
   assert.deepEqual(findings, []);
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /analyzer skipped/i);
+  assert.match(warnings[0], /ANALYZER_SKIPPED/);
+  assert.match(warnings[0], /跳过/);
 });
 
 test('fail mode with onAnalyzerError fail throws ANALYZER_FAILED', async () => {
@@ -149,5 +150,6 @@ test('aborted signal returns empty findings without throwing', async () => {
 
   assert.deepEqual(findings, []);
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /analyzer skipped/i);
+  assert.match(warnings[0], /ANALYZER_SKIPPED/);
+  assert.match(warnings[0], /分析器已中止/);
 });
