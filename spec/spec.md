@@ -5,8 +5,8 @@
 - 工程根目录：本仓库根目录（与 `reference/`、`spec/` 并列）
 - 产品名称：代码审查系统
 - 文档路径：`spec/spec.md`
-- 文档日期：2026-08-29
-- 文档状态：等待书面审阅
+- 文档日期：2026-08-30
+- 文档状态：等待书面审阅（新增 §21/§22/§23 必做扩展点）
 - 技术栈：Node.js 22、ESM JavaScript、原生 Web 页面、node:test
 - 归档原稿：`reference/2026-08-28-enterprise-codereview-course-design.md`（只读归档，非基线）
 - 实现约束：本 Spec 为唯一产品与技术基线；实现不依赖原 kdop-green 源码对照
@@ -18,20 +18,6 @@
 企业本地开发场景需要可审计的代码审查能力：将需求与源码变更交给本机 Agent 做语义分析，再由程序做确定性二次过滤，输出结构化报告。完整企业流水线常包含远程仓库同步、工单回写、多用户权限与通知等基础设施；本系统 MVP 聚焦最小但完整的审查闭环，保留边界、可靠性和审计能力，暂不纳入上述周边能力。
 
 核心业务闭环：
-
-~~~text
-本地项目目录 + 需求 Markdown
-        ↓
-固定全局审查方向
-        ↓
-固定 C/C++、java 规则 + 可配置 review-checklist
-        ↓
-本机 Cursor Agent 语义分析
-        ↓
-确定性二次过滤、风险豁免和修正
-        ↓
-JSON 与 HTML 结构化报告
-~~~
 
 ## 3. 项目目标
 
@@ -53,6 +39,9 @@ JSON 与 HTML 结构化报告
 10. 将报告保存为本地 JSON 和自包含 HTML。
 11. 通过配置切换 RemoteLlmReviewProvider，在不改动核心编排的前提下调用远程大模型（必做，见 §19）。
 12. 通过 ReviewScheduler 按 ReviewProfile 定时执行审查（必做，见 §20）。
+13. 通过 REMOTE_GIT 模式从 Git 远程仓库拉取后审查（必做，见 §21）。
+14. 内置 clang-tidy 外部静态分析器，结果与 AI Finding 并列进同一报告（必做，见 §22）。
+15. 超输入限制时自动分片多轮 Agent 并聚合（必做，见 §23）。
 
 ### 3.2 成功标准
 
@@ -68,8 +57,11 @@ MVP 达成以下结果即视为完成：
 8. 真实 Cursor 的人工验收能够完成一次审查并显示报告。
 9. RemoteLlmReviewProvider 通过配置可切换，自动化测试（Mock Server）验收通过，且满足 §19。
 10. ReviewScheduler 按 ReviewProfile 定时触发审查，自动化测试（含 FakeClock）验收通过，且满足 §20。
+11. REMOTE_GIT 模式能完成 clone 与 fetch/pull 并进入审查，错误码与重试行为满足 §21，自动化测试（本地 bare 仓库）验收通过。
+12. 内置 clang-tidy 分析器能与 AI Finding 并列进同一报告并经 PostReviewPolicy 去重，自动化测试满足 §22。
+13. 超输入限制时自动分片多轮 Agent 并聚合为单一报告，分片上限与失败处理满足 §23，自动化测试验收通过。
 
-未完成 §19 与 §20 的系统不得视为交付完成。
+未完成 §19、§20、§21、§22 与 §23 的系统不得视为交付完成。
 
 ## 4. 范围
 
@@ -94,16 +86,14 @@ MVP 达成以下结果即视为完成：
 ### 4.2 明确不包含
 
 - 修改、格式化或自动修复被审查源码。
-- Git 或 SVN 远程仓库拉取。
+- SVN 远程仓库拉取（Git 远程拉取见 §21）。
 - 已提交历史和分支间差异审查。
 - SQLite 或其他数据库。
 - 登录、SSO、权限中心和多用户。
 - 邮件、企微和其他通知。
 - Bug 自动提交或工单回写。
 - 消息队列和分布式 Worker。
-- 编译器、clang-tidy、Checkstyle、SonarQube 等外部静态分析器。
 - SQL、XML、Lua、JavaScript 等额外语言或文件类型。
-- 大项目自动分片、多轮聚合和并行 Agent 调用。
 - 自动修复、自动提交和自动合并。
 
 ### 4.3 必做扩展点
@@ -112,8 +102,11 @@ MVP 达成以下结果即视为完成：
 
 1. RemoteLlmReviewProvider（§19）：通过 API Key 调用真实远程大模型。
 2. ReviewScheduler（§20）：按照本地 ReviewProfile 定时执行相同的审查用例。
+3. Git 远程仓库拉取（§21）：支持 clone 与 fetch/pull，拉取后转本地工作目录再走现有审查流程。
+4. 外部静态分析器组合（§22）：内置 clang-tidy，结果与 AI Finding 并列进同一报告。
+5. 大项目分片与并行 Agent（§23）：超输入限制时自动分片多轮 Agent，再聚合后统一二次过滤。
 
-这两个扩展点必须复用 ReviewJobService、二次过滤和报告组件，不得复制主业务流程。缺少任一扩展点均视为未完成。
+这些扩展点必须复用 ReviewJobService、二次过滤和报告组件，不得复制主业务流程。缺少任一扩展点均视为未完成。
 
 ## 5. 核心概念
 
@@ -141,7 +134,7 @@ Cursor Agent 生成的是候选问题，不能直接作为最终企业审查结�
 
 - 项目目录。
 - 需求 Markdown 文件。
-- 审查模式：Git 变更或全量目录。
+- 审查模式：Git 变更、全量目录或 REMOTE_GIT（§21，需提供 remoteUrl 与 ref）。
 - review-checklist 是否启用。
 - review-checklist 文件路径。
 - checklist 适用目录，默认是项目根目录。
@@ -151,18 +144,6 @@ Cursor Agent 生成的是候选问题，不能直接作为最终企业审查结�
 ### 6.2 查看任务状态
 
 页面按照 reviewId 轮询任务状态：
-
-~~~text
-QUEUED
-  → COLLECTING
-  → REVIEWING
-  → FILTERING
-  → REPORTING
-  → SUCCEEDED
-
-任意执行阶段
-  → FAILED
-~~~
 
 任务完成后页面跳转到报告详情。任务失败后显示错误码、中文说明和建议操作。
 
@@ -188,16 +169,6 @@ QUEUED
 系统采用分层单体。组件通过普通 JavaScript 对象契约和构造函数注入协作，不创建没有行为价值的抽象基类。
 
 依赖方向固定为：
-
-~~~text
-Web Adapter
-    ↓
-Application Service
-    ↓
-Domain Policy
-    ↑
-Infrastructure Adapters
-~~~
 
 Domain 不读取文件、不启动进程、不访问 HTTP。Application 负责编排，不包含具体文件系统、Git、Cursor 或 HTML 实现。
 
@@ -240,7 +211,7 @@ Domain 不读取文件、不启动进程、不访问 HTTP。Application 负责�
 #### RuleResolver
 
 - 始终加载固定全局规则。
-- 输入包含 C/C++ 文件时加载固定 C/C++ 规则。
+- 输入包含 C/C++文件时加载固定 C/C++ 规则。
 - 输入包含 Java 文件时加载固定 Java 规则。
 - 根据 includePaths 和 excludePaths 判断是否加载 review-checklist。
 - 对规则内容计算 SHA-256。
@@ -265,23 +236,6 @@ Domain 不读取文件、不启动进程、不访问 HTTP。Application 负责�
 #### ReviewProvider
 
 Provider 契约为：
-
-~~~text
-review({
-  projectDir,
-  promptFile,
-  outputFile,
-  timeoutMs,
-  signal
-}) → {
-  rawOutput,
-  exitCode,
-  stdout,
-  stderr,
-  durationMs,
-  providerMetadata
-}
-~~~
 
 Provider 只负责与模型交互，不解析业务 Finding，不进行风险决策，也不写正式报告。
 
@@ -350,6 +304,24 @@ Cursor 命令名和参数因本机安装方式而异，因此示例配置不被�
 - 只调用 Application Service。
 - 不直接读取项目源码、加载规则或调用 Cursor。
 
+#### RemoteGitFetcher（§21）
+
+- 接收 remoteUrl 与 ref，执行 clone 或 fetch/pull 到本地工作目录。
+- 鉴权通过环境变量注入，不持有明文凭据。
+- 拉取失败映射为 REMOTE_FETCH_FAILED / REMOTE_AUTH_FAILED / REMOTE_REF_NOT_FOUND。
+
+#### ClangTidyAnalyzer（§22）
+
+- 对受支持 C/C++ 文件运行 clang-tidy，解析结果为 Analyzer Finding。
+- 失败时按 onAnalyzerError 跳过或失败。
+- 不修改被审查源码。
+
+#### ShardPlanner / ShardAggregator（§23）
+
+- ShardPlanner 按文件与字符预算生成分片计划。
+- ShardAggregator 汇总各片原始 Finding，交由 PostReviewPolicy 统一去重与定级。
+- 任一片失败即整任务 FAILED。
+
 ## 8. 源码采集规范
 
 ### 8.1 支持的扩展名
@@ -399,6 +371,8 @@ MVP 推荐默认值：
 - checklist 最大字符数：80,000。
 
 超过限制时任务在 REVIEWING 前失败，错误必须列出超限项目。系统不得静默截断代码或规则后继续审查。
+
+启用分片（§23）后，超过上述限制不再直接失败：ShardPlanner 按文件与字符预算自动分片，多轮调用 Agent 后聚合。分片数超过 `sharding.maxShards` 时仍以 `SHARD_LIMIT_EXCEEDED` 失败。
 
 ### 8.6 输入哈希
 
@@ -492,35 +466,7 @@ review-checklist 是唯一允许自由配置的审查规则：
 
 Cursor 必须只返回一个 JSON 对象：
 
-~~~json
-{
-  "summary": "本次审查摘要",
-  "overall_risk": "LOW",
-  "findings": [
-    {
-      "category": "CORRECTNESS",
-      "risk_level": "MEDIUM",
-      "title": "问题标题",
-      "description": "问题说明",
-      "file_path": "src/example.cpp",
-      "line_start": 10,
-      "line_end": 10,
-      "evidence": "代码与需求中的直接证据",
-      "requirement_reference": "需求章节或原文摘要",
-      "fix_suggestion": "中文修复建议",
-      "fix_code": "可选的替换代码"
-    }
-  ],
-  "evidence": [],
-  "recommended_actions": []
-}
-~~~
-
 合法风险等级：
-
-~~~text
-LOW < MEDIUM < HIGH < CRITICAL
-~~~
 
 合法类别：
 
@@ -631,49 +577,13 @@ REQUIREMENT_MISMATCH 必须同时提供 requirement_reference 和代码位置。
 
 每次政策处理必须写入：
 
-~~~text
-policyId
-action
-beforeRisk
-afterRisk
-reason
-timestamp
-~~~
-
 相同输入和相同 AI JSON 必须得到相同的最终 Finding 与风险。决策函数不得使用当前时间、随机数或外部服务；timestamp 由编排层在决策完成后添加。
 
 ## 12. 报告模型
 
 ### 12.1 顶层字段
 
-~~~text
-schemaVersion
-reviewId
-status
-createdAt
-completedAt
-durationMs
-request
-source
-rules
-ai
-result
-errors
-~~~
-
 ### 12.2 request
-
-~~~text
-projectName
-projectDirDisplay
-sourceMode
-requirementFileDisplay
-checklistEnabled
-checklistFileDisplay
-checklistIncludePaths
-checklistExcludePaths
-triggerType
-~~~
 
 triggerType：手工任务为 MANUAL；定时任务（§20，必做）为 SCHEDULED。
 
@@ -681,45 +591,13 @@ triggerType：手工任务为 MANUAL；定时任务（§20，必做）为 SCHEDU
 
 ### 12.3 source
 
-~~~text
-inputHash
-fileCount
-totalCharacters
-files[]
-  path
-  language
-  status
-  contentHash
-  changedLines
-~~~
-
 source 不保存完整源码。
 
 ### 12.4 ai
 
-~~~text
-provider
-durationMs
-exitCode
-model
-rawOverallRisk
-rawOutput
-stderrSummary
-~~~
-
 rawOutput 可能包含模型复述的代码片段，因此报告目录必须按本地敏感开发数据保护。
 
 ### 12.5 result
-
-~~~text
-summary
-overallRisk
-activeFindingCount
-exemptedFindingCount
-mergedFindingCount
-findings[]
-recommendedActions[]
-~~~
 
 每个 Finding 包含：
 
@@ -739,6 +617,7 @@ originalRisk
 finalRisk
 status
 decisions[]
+source              # ai | analyzer；§22 引入 analyzer 来源
 ~~~
 
 ### 12.6 HTML 页面
@@ -766,7 +645,7 @@ HTML 报告按顺序展示：
 
 ### 13.2 API
 
-- POST /api/reviews：校验请求并创建任务，成功返回 202。
+- POST /api/reviews：校验请求并创建任务，成功返回 202。`sourceMode` 取值 `GIT_CHANGES`、`FULL_DIRECTORY` 或 `REMOTE_GIT`（见 §21）。
 - GET /api/jobs/{reviewId}：读取内存任务或已持久化报告状态。
 - GET /api/reports：读取历史摘要。
 - GET /api/reports/{reviewId}：读取结构化报告。
@@ -774,81 +653,15 @@ HTML 报告按顺序展示：
 
 ### 13.3 请求示例
 
-~~~json
-{
-  "projectDir": "D:/workspaces/sample-project",
-  "requirementFile": "D:/workspaces/sample-project/docs/requirement.md",
-  "sourceMode": "GIT_CHANGES",
-  "checklist": {
-    "enabled": true,
-    "path": "D:/workspaces/checklists/review-checklist.md",
-    "includePaths": ["src"],
-    "excludePaths": ["src/generated"]
-  }
-}
-~~~
-
 ### 13.4 HTTP 错误
 
 同步校验失败使用 4xx，并返回：
-
-~~~json
-{
-  "error": {
-    "code": "PATH_OUTSIDE_ALLOWED_ROOT",
-    "message": "项目目录不在允许访问的根目录中",
-    "details": []
-  }
-}
-~~~
 
 已进入队列后的执行错误使用 FAILED 报告表达，不通过延迟 HTTP 请求返回。
 
 ## 14. 配置
 
 ### 14.1 示例配置
-
-~~~json
-{
-  "server": {
-    "host": "127.0.0.1",
-    "port": 3100
-  },
-  "security": {
-    "allowedRoots": ["D:/workspaces"]
-  },
-  "review": {
-    "maxFiles": 50,
-    "maxFileChars": 80000,
-    "maxInputChars": 240000,
-    "maxRequirementChars": 50000,
-    "allowedExtensions": [
-      ".c", ".cc", ".cpp", ".cxx",
-      ".h", ".hpp", ".hxx", ".java"
-    ]
-  },
-  "cursor": {
-    "command": "cursor-agent",
-    "args": [
-      "--prompt-file", "{promptFile}",
-      "--workspace", "{projectDir}",
-      "--output", "{outputFile}"
-    ],
-    "timeoutMs": 600000,
-    "maxOutputChars": 2000000
-  },
-  "reports": {
-    "dir": "./data/reports",
-    "includeAbsolutePaths": false
-  },
-  "checklist": {
-    "enabled": true,
-    "path": "./docs/rules/review-checklist.md",
-    "includePaths": ["."],
-    "excludePaths": []
-  }
-}
-~~~
 
 示例中的 Cursor 命令只表达参数模板，不保证与本机安装完全一致。部署前必须根据本机 Cursor Agent 的帮助信息调整 command 和 args。
 
@@ -857,6 +670,7 @@ HTML 报告按顺序展示：
 - app.config.example.json 可以提交。
 - app.config.json 不提交。
 - 真实 API Key 只能来自环境变量。
+- remoteGit 凭据（token、用户名）只能来自环境变量，配置只保存环境变量名；启动阶段确认存在但不得打印其值。
 - 配置解析错误必须在服务启动时失败。
 - 日志不得输出完整环境变量、命令环境或敏感 Header。
 
@@ -882,6 +696,12 @@ HTML 报告按顺序展示：
 - AI_OUTPUT_INVALID_JSON
 - AI_OUTPUT_SCHEMA_INVALID
 - REPORT_WRITE_FAILED
+- REMOTE_FETCH_FAILED
+- REMOTE_AUTH_FAILED
+- REMOTE_REF_NOT_FOUND
+- ANALYZER_SKIPPED
+- ANALYZER_FAILED
+- SHARD_LIMIT_EXCEEDED
 
 错误对象必须包含 code、中文 message 和安全的 details。不得把完整 stderr、环境变量或绝对敏感路径直接返回页面。
 
@@ -921,22 +741,12 @@ MVP 不自动重试 Cursor。用户可以在页面重新运行任务。这样可
 
 使用 JSON Lines 结构化日志，字段至少包含：
 
-~~~text
-timestamp
-level
-event
-reviewId
-stage
-durationMs
-errorCode
-message
-~~~
-
 日志不记录完整源码、完整 Prompt、API Key 或未脱敏的绝对路径。
 
 ### 16.5 并发与退出
 
-- 全局 Cursor 并发固定为 1。
+- 默认全局 Cursor 并发固定为 1。
+- 启用分片（§23）后并发上限由 `sharding.maxConcurrency` 配置，默认仍为 1；并发任务受同一全局上限约束。
 - 队列使用 FIFO。
 - 收到 SIGINT 或 SIGTERM 后停止接受任务。
 - 等待当前任务最多 30 秒。
@@ -959,6 +769,9 @@ message
 - HtmlReportRenderer。
 - ReviewJobService 状态机。
 - Web API 的输入与状态行为。
+- RemoteGitFetcher（§21）：clone/fetch、ref 解析、重试与错误码映射。
+- ClangTidyAnalyzer（§22）：命令构造、结果解析、失败处理与 Finding 归一。
+- ShardPlanner 与 ShardAggregator（§23）：字符预算分片、聚合与去重。
 
 ### 17.2 不要求形式化 TDD 的内容
 
@@ -1008,18 +821,6 @@ message
 #### 端到端测试
 
 使用固定 Fixture 和 FakeReviewProvider：
-
-~~~text
-Web API 请求
-→ 源码采集
-→ 规则装配
-→ Prompt 构建
-→ Fake AI JSON
-→ 二次过滤
-→ report.json
-→ report.html
-→ Web 查询
-~~~
 
 真实 Cursor 只做人工冒烟测试，不作为 npm test 的依赖。
 
@@ -1093,6 +894,36 @@ AI 文本包含 script 标签、HTML 属性和特殊字符时：
 - 报告展示 AI 原始风险和程序最终风险。
 - 被审查源码没有发生修改。
 
+### AC-10 Git 远程拉取闭环
+
+使用本地 bare 仓库作为远端，REMOTE_GIT 模式分别验证 clone 与 fetch/pull：
+
+- 拉取后进入审查并生成报告。
+- ref 不存在返回 REMOTE_REF_NOT_FOUND；鉴权失败返回 REMOTE_AUTH_FAILED 且不重试；网络错误重试耗尽返回 REMOTE_FETCH_FAILED。
+- 拉取目录不在 allowedRoots 内时任务失败。
+- ephemeral 模式审查后清理临时目录。
+- 日志不含 token/用户名明文。
+
+### AC-11 外部静态分析器组合
+
+在含 C++ 文件的临时仓库启用 analyzer：
+
+- 报告同时出现 AI Finding 与 clang-tidy Finding，均带规则编号与审计步骤。
+- clang-tidy 未安装时任务不失败，含 ANALYZER_SKIPPED。
+- onAnalyzerError = fail 时失败导致任务 FAILED。
+- Analyzer Finding 与重复 AI Finding 经 PF-009 正确去重。
+- 被审查源码运行前后内容一致。
+
+### AC-12 大项目分片与聚合
+
+构造超过 §8.5 字符数限制的源码集：
+
+- 启用自动分片后不因超限失败，生成单一报告并含分片清单。
+- 分片数超过 maxShards 时任务 FAILED，错误码 SHARD_LIMIT_EXCEEDED。
+- 任一片 Agent 失败时整任务 FAILED，不产生部分结果报告。
+- 跨片重复 Finding 聚合后经 PF-009 正确去重。
+- maxConcurrency = 1 与 >1 配置下最终报告一致。
+
 ## 19. 远程大模型 API（必做扩展点）
 
 本节为交付必做项。未实现或未通过 §19.4 验收，产品不得视为完成。
@@ -1113,20 +944,6 @@ AI 文本包含 script 标签、HTML 属性和特殊字符时：
 
 ### 19.3 配置切换
 
-~~~json
-{
-  "ai": {
-    "provider": "cursor",
-    "remote": {
-      "baseUrl": "https://api.example.com",
-      "model": "review-model",
-      "apiKeyEnv": "REMOTE_LLM_API_KEY",
-      "timeoutMs": 600000
-    }
-  }
-}
-~~~
-
 provider 为 cursor 时忽略 remote；provider 为 remote 时启动阶段确认环境变量存在，但不得打印其值。
 
 ### 19.4 验收
@@ -1144,18 +961,13 @@ provider 为 cursor 时忽略 remote；provider 为 remote 时启动阶段确认
 
 每个定时配置包含：
 
-~~~text
-profileId
-name
-enabled
-projectDir
-requirementFile
-sourceMode
-checklist
-intervalMinutes
-~~~
+`scheduleType` 三选一，互斥：
 
-只支持固定分钟间隔，最小间隔为 5 分钟，不引入 Cron 表达式解析。
+- **interval**：固定分钟间隔，`intervalMinutes` 最小为 5。无 `scheduleType` 的旧配置按 interval 兼容。
+- **calendar**：结构化固定时刻。`calendar.daysOfWeek` 为 0（周日）–6（周六）的非空数组；`hour` 0–23；`minute` 0–59。按 `timezone` 计算下次运行点。
+- **cron**：标准 5 段表达式（支持 `*`、`,`、`-`、`/`；周字段 0–7，7 等同周日）。不支持秒字段与 `@weekly` 等扩展。按 `timezone` 计算。
+
+固定时间在宕机错过窗口后，恢复时最多补跑一次（不堆积多次）。
 
 ### 20.2 调度行为
 
@@ -1175,27 +987,111 @@ intervalMinutes
 - 服务重启后能读取上次运行状态并计算下一次时间。
 - 定时任务生成与人工任务相同 Schema 的报告。
 
-## 21. 产品交付物
+## 21. Git 远程仓库拉取（必做扩展点）
+
+本节为交付必做项。未实现或未通过 §21.4 验收，产品不得视为完成。
+
+### 21.1 目标
+
+支持用户通过 `sourceMode = REMOTE_GIT` 指定一个 Git 远程仓库，由系统拉取到本地工作目录后，转走现有 Git 变更或全量目录审查流程，复用 ReviewJobService、二次过滤与报告组件。
+
+### 21.2 约束
+
+- 仅支持 Git，不支持 SVN。
+- 支持两种拉取：
+  - **clone**：首次拉取远程仓库到本地。
+  - **fetch/pull**：本地已存在该仓库 clone 时，更新到指定 ref。
+- 必须指定 **ref**（分支、tag 或 commit）；不指定 ref 时任务失败。
+- 拉取后审查模式仍由用户在 Git 变更（§8.3）与全量目录（§8.4）中选择。
+- 不引入已提交历史差异审查（保持 §4.2）。
+- 鉴权：配置中填写 HTTPS token/用户名的环境变量名，落盘脱敏（参考 §14.2），启动阶段确认存在但不得打印其值；SSH 鉴权交由本机 git 默认机制（`GIT_SSH_COMMAND` 等），系统不持有私钥。
+- clone 落盘：默认到 `remoteGit.workspaceDir` 下按仓库名建子目录并复用；`remoteGit.ephemeral = true` 时使用临时目录，审查后清理。
+- 失败处理：网络错误与 ref 不存在有限次重试（`remoteGit.fetchRetries`，默认 3）后 FAILED；鉴权失败不重试，直接 FAILED。
+- 拉取产生的本地工作目录必须落在 `allowedRoots` 内，否则任务失败。
+
+### 21.3 配置
+
+见 §14.1 中 `remoteGit` 段。请求体扩展字段：
+
+`reviewMode` 表示拉取完成后采用的审查模式，取值 `GIT_CHANGES` 或 `FULL_DIRECTORY`。
+
+### 21.4 验收
+
+- 使用本地 bare 仓库作为远端，验证 clone 与 fetch/pull 两种路径均能进入审查并生成报告。
+- ref 缺失或不存在时返回 `REMOTE_REF_NOT_FOUND`。
+- 鉴权失败返回 `REMOTE_AUTH_FAILED` 且不重试。
+- 网络错误重试次数耗尽后返回 `REMOTE_FETCH_FAILED`。
+- 拉取后的本地工作目录不在 `allowedRoots` 内时任务失败。
+- ephemeral 模式下审查完成后临时目录被清理。
+- 拉取过程不向日志输出 token 或用户名明文。
+
+## 22. 外部静态分析器组合（必做扩展点）
+
+本节为交付必做项。未实现或未通过 §22.4 验收，产品不得视为完成。
+
+### 22.1 目标
+
+在 AI 语义分析之外，内置 clang-tidy 作为外部静态分析器，将其结果作为独立 Finding 源与 AI Finding 并列进入同一报告，统一走 PostReviewPolicy 去重与定级，复用现有报告模型与审计轨迹。
+
+### 22.2 约束
+
+- 本阶段**只内置 clang-tidy 一个工具**，覆盖 C/C++；Java 本阶段不内置分析器，预留 Analyzer 接口。
+- 内置 clang-tidy 调用与结果解析，命令模板固定，仅开关、可执行路径与参数占位可配。
+- clang-tidy Finding 与 AI Finding **并列**进同一报告，统一走 PostReviewPolicy；不在策略中偏袒工具结果。
+- 每条 Analyzer Finding 分配 `analyzerId`（如 `clang-tidy`）与 `ruleId`（对应 clang-tidy check 名），走与 AI Finding 相同的 PostReviewPolicy 决策步骤，保留原始风险、最终风险与决策步骤（参考 §5.3）。
+- clang-tidy 未安装、超时或结果解析失败时，默认**跳过**并记录 `ANALYZER_SKIPPED` warning，审查继续；配置 `analyzer.onAnalyzerError = fail` 时升级为 `ANALYZER_FAILED` 并使任务 FAILED。
+- Analyzer 仅对受支持扩展名（§8.1）的 C/C++ 文件运行；Java 文件跳过。
+- Analyzer 不修改被审查源码。
+
+### 22.3 配置
+
+见 §14.1 中 `analyzer` 段。`analyzer.enabled = false` 时整段不生效。
+
+### 22.4 验收
+
+- 在含 C++ 文件的临时仓库中启用 analyzer，报告同时出现 AI Finding 与 clang-tidy Finding，二者均带规则编号与审计步骤。
+- clang-tidy 未安装时任务不失败，报告与日志含 `ANALYZER_SKIPPED`。
+- `onAnalyzerError = fail` 时 clang-tidy 失败导致任务 FAILED。
+- Analyzer Finding 经 PostReviewPolicy 后与重复 AI Finding 正确去重（PF-009）。
+- 被审查源码在 Analyzer 运行前后内容一致。
+
+## 23. 大项目分片与并行 Agent（必做扩展点）
+
+本节为交付必做项。未实现或未通过 §23.4 验收，产品不得视为完成。
+
+### 23.1 目标
+
+当受审查源码超过 §8.5 输入限制时，自动按文件与字符预算分片，多轮调用 Agent，再聚合后统一二次过滤，输出单一报告；同时允许在未超限时通过配置开启并行以提速。
+
+### 23.2 约束
+
+- 触发：
+  - **自动分片**（刚需）：超过 §8.5 文件数或字符数限制时，自动分片后多轮 Agent，再聚合；不再因超限直接失败，除非分片数超过上限。
+  - **可选并行**：未超限时 `sharding.enabled = true` 可开启分片并行；默认关闭。
+- 分片键：**按文件 + 字符预算**打包成片，每片不超过 `sharding.shardChars`（默认 120,000，留规则与协议余量）；不跨文件拆分单文件，单文件超 `shardChars` 时该片单独成片并记录 warning。
+- 并发：分片模式下并发上限由 `sharding.maxConcurrency` 配置，默认 1（串行多轮）；并发 > 1 时按提交顺序调度，受全局并发上限约束（§16.5）。
+- 聚合：所有片原始 Finding 汇总后**统一跑一次** PostReviewPolicy；片内只做 Schema 校验，不做去重与定级。
+- 审计：对外仍是单任务、单报告、单 inputHash；分片清单（每片文件列表、字符数、Agent 调用次序）写入报告审计子节。
+- 失败：任一片 Agent 失败 → 整任务 FAILED（与 AC-05“不伪造结论”一致），不静默丢片。
+- 上限：最大分片数 `sharding.maxShards`（默认 20），超过则任务 FAILED，错误码 `SHARD_LIMIT_EXCEEDED`。
+
+### 23.3 配置
+
+见 §14.1 中 `sharding` 段。`sharding.enabled = false` 时仅在超限时自动分片，未超限不分片。
+
+### 23.4 验收
+
+- 构造超过 §8.5 字符数限制的源码集，启用自动分片后任务不因超限失败，生成单一报告，报告含分片清单。
+- 分片数超过 `maxShards` 时任务 FAILED，错误码 `SHARD_LIMIT_EXCEEDED`。
+- 任一片 Agent 失败时整任务 FAILED，不产生部分结果报告。
+- 跨片重复 Finding 经聚合后 PostReviewPolicy 正确去重（PF-009）。
+- `maxConcurrency = 1` 与 `maxConcurrency > 1` 两种配置下最终报告一致。
+- 报告 inputHash 与不分片等价输入一致。
+
+## 24. 产品交付物
 
 仓库交付物至少包含：
 
-~~~text
-README.md
-spec/
-  spec.md
-docs/
-  rules/
-    global-review.md
-    cpp-review.md
-    java-review.md
-    review-checklist.md
-    post-review-policy.md
-app.config.example.json
-src/
-tests/
-data/                    # gitignore；运行时报告与日志
-~~~
+实现与验收必须以 `spec/spec.md` 为唯一基线。自动化测试不得依赖真实 Cursor 或真实远程 API；远程 Provider 与定时调度的自动化验收分别使用 Mock Server 与 FakeClock；Git 远程拉取使用本地 bare 仓库；clang-tidy 验收在工具缺失时验证跳过路径，在工具可用时验证 Finding 合并。
 
-实现与验收必须以 `spec/spec.md` 为唯一基线。自动化测试不得依赖真实 Cursor 或真实远程 API；远程 Provider 与定时调度的自动化验收分别使用 Mock Server 与 FakeClock。
-
-交付完成条件：§4.1 核心审查闭环、§19 RemoteLlmReviewProvider、§20 ReviewScheduler 均已实现并通过对应验收。
+交付完成条件：§4.1 核心审查闭环、§19 RemoteLlmReviewProvider、§20 ReviewScheduler、§21 Git 远程仓库拉取、§22 外部静态分析器组合、§23 大项目分片与并行 Agent 均已实现并通过对应验收。
