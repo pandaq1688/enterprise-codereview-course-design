@@ -348,6 +348,8 @@ export function createReviewJobService(deps) {
     let collected = null;
     let promptFile = null;
     let outputFile = null;
+    /** @type {string[]} */
+    let shardCleanupFiles = [];
     const maxOutputChars = config.cursor?.maxOutputChars ?? 2_000_000;
     currentReviewId = job.reviewId;
     currentAbort = new AbortController();
@@ -365,27 +367,6 @@ export function createReviewJobService(deps) {
       collected = await collectInputs(job.request);
       job._fetchedCleanup = collected.fetchedCleanup ?? null;
       job.effectiveProjectDir = collected.projectDir;
-      const prompt = promptBuilder({
-        requirementText: collected.requirement.text,
-        sourceMode: job.request.sourceMode,
-        files: collected.source.files,
-        contents: collected.source.contents,
-        rules: collected.rules
-      });
-
-      promptFile = path.join(os.tmpdir(), `crs-${job.reviewId}-prompt.txt`);
-      outputFile = path.join(os.tmpdir(), `crs-${job.reviewId}-out.json`);
-      await fs.writeFile(promptFile, prompt.text, 'utf8');
-
-      setStatus(job, 'REVIEWING');
-      logger.log({
-        level: 'info',
-        event: 'JOB_STAGE',
-        reviewId: job.reviewId,
-        stage: 'REVIEWING',
-        message: job.request.projectName
-      });
-
       // Ruling: source-limit enforcement moved from collectors into JobService.
       // Collectors were called with relaxed (Infinity) limits, so they never
       // throw on source count/size. Exceeding limits now auto-shards.
@@ -409,20 +390,73 @@ export function createReviewJobService(deps) {
         shards = planned.shards;
       }
 
+      const isSharded = shards && shards.length > 1;
+
+      // Single-call path uses one prompt built from ALL files. The sharded path
+      // builds one prompt per shard from ONLY that shard's files (token-budget
+      // reduction) and gives each shard its own promptFile/outputFile (no race
+      // when maxConcurrency > 1).
+      /** @type {{ shard: object, promptFile: string, outputFile: string }[]} */
+      let shardJobs = [];
+      if (!isSharded) {
+        const prompt = promptBuilder({
+          requirementText: collected.requirement.text,
+          sourceMode: job.request.sourceMode,
+          files: collected.source.files,
+          contents: collected.source.contents,
+          rules: collected.rules
+        });
+        promptFile = path.join(os.tmpdir(), `crs-${job.reviewId}-prompt.txt`);
+        outputFile = path.join(os.tmpdir(), `crs-${job.reviewId}-out.json`);
+        await fs.writeFile(promptFile, prompt.text, 'utf8');
+      } else {
+        shardJobs = shards.map((shard) => ({
+          shard,
+          promptFile: path.join(
+            os.tmpdir(),
+            `crs-${job.reviewId}-shard-${shard.index}-prompt.txt`
+          ),
+          outputFile: path.join(
+            os.tmpdir(),
+            `crs-${job.reviewId}-shard-${shard.index}-out.json`
+          )
+        }));
+        for (const shj of shardJobs) {
+          const shardPrompt = promptBuilder({
+            requirementText: collected.requirement.text,
+            sourceMode: job.request.sourceMode,
+            files: shj.shard.files,
+            contents: collected.source.contents,
+            rules: collected.rules
+          });
+          await fs.writeFile(shj.promptFile, shardPrompt.text, 'utf8');
+          shardCleanupFiles.push(shj.promptFile, shj.outputFile);
+        }
+      }
+
+      setStatus(job, 'REVIEWING');
+      logger.log({
+        level: 'info',
+        event: 'JOB_STAGE',
+        reviewId: job.reviewId,
+        stage: 'REVIEWING',
+        message: job.request.projectName
+      });
+
       let providerResult;
       let parsed;
       let rawOutput;
       let aiShards;
 
-      if (shards && shards.length > 1) {
+      if (isSharded) {
         const sem = createSemaphore(config.sharding.maxConcurrency);
         const shardResults = await Promise.all(
-          shards.map((shard) =>
+          shardJobs.map(({ shard, promptFile: shardPromptFile, outputFile: shardOutputFile }) =>
             sem.run(() =>
               provider.review({
                 projectDir: job.effectiveProjectDir,
-                promptFile,
-                outputFile,
+                promptFile: shardPromptFile,
+                outputFile: shardOutputFile,
                 timeoutMs: resolveReviewTimeoutMs(config),
                 signal: currentAbort.signal,
                 files: shard.files
@@ -615,7 +649,7 @@ export function createReviewJobService(deps) {
     } finally {
       currentReviewId = null;
       currentAbort = null;
-      for (const p of [promptFile, outputFile]) {
+      for (const p of [promptFile, outputFile, ...shardCleanupFiles]) {
         if (!p) continue;
         try {
           await fs.unlink(p);

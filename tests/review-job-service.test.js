@@ -731,13 +731,29 @@ function createShardCountingProvider(opts = {}) {
   let calls = 0;
   let maxConcurrent = 0;
   let inFlight = 0;
+  /** @type {{ promptFile: string, outputFile: string, promptText: string, files: object[] }[]} */
+  const callsArgs = [];
   const provider = {
     async review(args) {
       calls += 1;
       const callNum = calls;
       inFlight += 1;
       maxConcurrent = Math.max(maxConcurrent, inFlight);
+      let promptText = '';
       try {
+        if (args?.promptFile) {
+          try {
+            promptText = await fs.readFile(args.promptFile, 'utf8');
+          } catch {
+            promptText = '';
+          }
+        }
+        callsArgs.push({
+          promptFile: args?.promptFile,
+          outputFile: args?.outputFile,
+          promptText,
+          files: args?.files ?? []
+        });
         if (delayMs > 0) {
           await new Promise((r) => setTimeout(r, delayMs));
         }
@@ -763,6 +779,7 @@ function createShardCountingProvider(opts = {}) {
   };
   Object.defineProperty(provider, 'calls', { get: () => calls });
   Object.defineProperty(provider, 'maxConcurrent', { get: () => maxConcurrent });
+  Object.defineProperty(provider, 'callsArgs', { get: () => callsArgs });
   return provider;
 }
 
@@ -1014,5 +1031,92 @@ test('sharding: report ai.shards entries have {index, files:[{path}], charCount}
       assert.ok(typeof f.path === 'string');
     }
     assert.ok(typeof s.charCount === 'number' && s.charCount > 0);
+  }
+});
+
+test('sharding: each shard receives a DISTINCT promptFile containing ONLY its own files', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createLargeProjectFixture({});
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: (callNum) => shardFindingsJson(callNum)
+  });
+  const config = shardingConfig(reportsDir, {
+    shardChars: 3000,
+    maxShards: 20,
+    maxConcurrency: 2
+  });
+  config.review.maxInputChars = 4000;
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `sp-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+  assert.ok(provider.calls >= 2, `expected >= 2 shards, got ${provider.calls}`);
+
+  const callsArgs = provider.callsArgs;
+  // Distinct promptFile paths
+  const promptFiles = callsArgs.map((c) => c.promptFile);
+  assert.equal(new Set(promptFiles).size, promptFiles.length, 'promptFile paths must be unique');
+  // Distinct outputFile paths
+  const outputFiles = callsArgs.map((c) => c.outputFile);
+  assert.equal(new Set(outputFiles).size, outputFiles.length, 'outputFile paths must be unique');
+  // Each shard's prompt contains only its own file path, not all files
+  const allPaths = callsArgs.map((c) => c.files.map((f) => f.path).sort().join(','));
+  assert.equal(new Set(allPaths).size, allPaths.length, 'each shard must cover a distinct file set');
+  for (const c of callsArgs) {
+    const ownPaths = c.files.map((f) => f.path);
+    for (const p of ownPaths) {
+      assert.ok(c.promptText.includes(p), `prompt must include its file ${p}`);
+    }
+    // No shard prompt should mention another shard's file
+    for (const other of callsArgs) {
+      if (other === c) continue;
+      for (const p of other.files.map((f) => f.path)) {
+        assert.ok(!c.promptText.includes(p), `shard prompt must not include sibling file ${p}`);
+      }
+    }
+  }
+});
+
+test('sharding: maxConcurrency=2 yields unique outputFile paths across concurrent shards', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createLargeProjectFixture({});
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: () => HIGH_FINDING_JSON,
+    delayMs: 30
+  });
+  const config = shardingConfig(reportsDir, {
+    shardChars: 3000,
+    maxShards: 20,
+    maxConcurrency: 2
+  });
+  config.review.maxInputChars = 4000;
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `so-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+  assert.ok(provider.maxConcurrent <= 2, `concurrency ${provider.maxConcurrent} > 2`);
+
+  const outputFiles = provider.callsArgs.map((c) => c.outputFile);
+  assert.equal(new Set(outputFiles).size, outputFiles.length, 'outputFile paths must be unique');
+  for (const p of outputFiles) {
+    assert.match(p, /shard-\d+-out\.json$/, `outputFile should be per-shard: ${p}`);
   }
 });
