@@ -83,3 +83,37 @@ test('ephemeral cleanup removes localDir', async () => {
   await cleanup();
   await assert.rejects(() => fs.access(localDir));
 });
+
+test('existing-repo fetch path retries network errors', async () => {
+  const { bare, headRef } = await makeBareRepo();
+  const workspace = await makeTempDir('crs-ws-');
+  const realWs = await resolveRealPath(workspace);
+  const fetcher = makeFetcher(workspace, [realWs], { fetchRetries: 2 });
+  await fetcher.fetch({ remoteUrl: toGitPath(bare), ref: headRef });
+  await fs.rm(bare, { recursive: true, force: true });
+  await assert.rejects(
+    () => fetcher.fetch({ remoteUrl: toGitPath(bare), ref: headRef }),
+    (err) => err.code === ErrorCodes.REMOTE_FETCH_FAILED
+  );
+});
+
+test('ephemeral removes temp dir on fetch failure', async () => {
+  const realTmp = await resolveRealPath(os.tmpdir());
+  const prefix = 'crs-remote-';
+  const remoteDirs = async () => (await fs.readdir(realTmp)).filter((n) => n.startsWith(prefix));
+  const before = new Set(await remoteDirs());
+  const fetcher = createRemoteGitFetcher({
+    workspaceDir: '/unused',
+    ephemeral: true,
+    fetchRetries: 0,
+    credentials: null,
+    allowedRoots: [realTmp],
+    logger: null
+  });
+  await assert.rejects(
+    () => fetcher.fetch({ remoteUrl: 'http://127.0.0.1:9/unreachable.git', ref: 'master' }),
+    (err) => err.code === ErrorCodes.REMOTE_FETCH_FAILED
+  );
+  const after = new Set(await remoteDirs());
+  assert.equal(after.size, before.size);
+});

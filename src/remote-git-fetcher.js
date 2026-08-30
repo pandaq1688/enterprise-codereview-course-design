@@ -50,17 +50,24 @@ export function createRemoteGitFetcher({ workspaceDir, ephemeral, fetchRetries, 
       localDir = path.join(wsReal, repoNameFromUrl(remoteUrl));
       await fs.mkdir(localDir, { recursive: true });
     }
-    const exists = await fs.stat(path.join(localDir, '.git')).then(() => true).catch(() => false);
-    if (exists) {
-      await runGit([...extraArgs, 'fetch', remoteUrl, ref], { cwd: localDir, env, retries: 0 });
-      await runGit(['checkout', ref], { cwd: localDir, env, retries: 0 });
-    } else {
-      await runGit([...extraArgs, 'clone', remoteUrl, localDir], { cwd: process.cwd(), env, retries: fetchRetries });
-      await runGit(['checkout', ref], { cwd: localDir, env, retries: 0 });
+    try {
+      const exists = await fs.stat(path.join(localDir, '.git')).then(() => true).catch(() => false);
+      if (exists) {
+        await runGit([...extraArgs, 'fetch', remoteUrl, ref], { cwd: localDir, env, retries: fetchRetries });
+        await runGit(['checkout', ref], { cwd: localDir, env, retries: 0 });
+      } else {
+        await runGit([...extraArgs, 'clone', remoteUrl, localDir], { cwd: process.cwd(), env, retries: fetchRetries });
+        await runGit(['checkout', ref], { cwd: localDir, env, retries: 0 });
+      }
+      const real = await resolveRealPath(localDir);
+      if (allowedRoots) assertInsideAllowedRoots(real, allowedRoots, localDir);
+      return { localDir: real, cleanup };
+    } catch (err) {
+      if (ephemeral) {
+        await fs.rm(localDir, { recursive: true, force: true }).catch(() => {});
+      }
+      throw err;
     }
-    const real = await resolveRealPath(localDir);
-    if (allowedRoots) assertInsideAllowedRoots(real, allowedRoots, localDir);
-    return { localDir: real, cleanup };
   }
 
   return { fetch };
