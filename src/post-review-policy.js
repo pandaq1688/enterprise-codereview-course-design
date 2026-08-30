@@ -340,7 +340,13 @@ function shouldMergeFindings(primary, current) {
     current.lineStart !== null &&
     primary.lineStart === current.lineStart;
 
-  if (sameLine) {
+  // The same-line shortcut short-circuits the title-fingerprint check only for
+  // genuine same-check analyzer dedup (at least one finding carries a
+  // non-null ruleId). When BOTH findings are AI findings (ruleId null) on the
+  // same line, the title fingerprint must still match — otherwise two
+  // distinct AI findings on the same line would be wrongly merged (a
+  // backward-compat regression vs. the base version).
+  if (sameLine && (primary.ruleId !== null || current.ruleId !== null)) {
     return true;
   }
 

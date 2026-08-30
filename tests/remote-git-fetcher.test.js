@@ -117,3 +117,95 @@ test('ephemeral removes temp dir on fetch failure', async () => {
   const after = new Set(await remoteDirs());
   assert.equal(after.size, before.size);
 });
+
+// ---------------------------------------------------------------------------
+// AC-10: token plaintext must never appear in logs (spec-mandated spy logger
+// assertion). Exercises the credential injection path: configures a tokenEnv
+// holding a sentinel value and asserts no captured log line contains it.
+// ---------------------------------------------------------------------------
+
+function makeSpyLogger() {
+  const entries = [];
+  return {
+    entries,
+    log(entry) {
+      entries.push(entry);
+    }
+  };
+}
+
+test('AC-10: token plaintext never appears in logger calls across a clone', async () => {
+  const sentinel = 'CRS_TEST_TOKEN_SENTINEL_VALUE_9f3a';
+  process.env.CRS_TEST_TOKEN_SENTINEL = sentinel;
+  const { bare, headRef } = await makeBareRepo();
+  const workspace = await makeTempDir('crs-ws-');
+  const realWs = await resolveRealPath(workspace);
+  const logger = makeSpyLogger();
+  try {
+    const fetcher = createRemoteGitFetcher({
+      workspaceDir: workspace,
+      ephemeral: false,
+      fetchRetries: 0,
+      credentials: { tokenEnv: 'CRS_TEST_TOKEN_SENTINEL', usernameEnv: '' },
+      allowedRoots: [realWs],
+      logger
+    });
+
+    await fetcher.fetch({ remoteUrl: toGitPath(bare), ref: headRef });
+
+    assert.ok(logger.entries.length > 0, 'fetcher must emit log entries for the spy to assert against');
+    for (const entry of logger.entries) {
+      const serialized = JSON.stringify(entry);
+      assert.equal(
+        serialized.includes(sentinel),
+        false,
+        `token sentinel leaked into log entry: ${serialized}`
+      );
+    }
+  } finally {
+    delete process.env.CRS_TEST_TOKEN_SENTINEL;
+  }
+});
+
+test('AC-10: token plaintext never appears in logger calls or error on failed fetch', async () => {
+  const sentinel = 'CRS_TEST_TOKEN_SENTINEL_VALUE_7c1e';
+  process.env.CRS_TEST_TOKEN_SENTINEL = sentinel;
+  const { bare } = await makeBareRepo();
+  const workspace = await makeTempDir('crs-ws-');
+  const realWs = await resolveRealPath(workspace);
+  const logger = makeSpyLogger();
+  try {
+    const fetcher = createRemoteGitFetcher({
+      workspaceDir: workspace,
+      ephemeral: false,
+      fetchRetries: 0,
+      credentials: { tokenEnv: 'CRS_TEST_TOKEN_SENTINEL', usernameEnv: '' },
+      allowedRoots: [realWs],
+      logger
+    });
+
+    await assert.rejects(
+      () => fetcher.fetch({ remoteUrl: toGitPath(bare), ref: 'no-such-ref' }),
+      (err) => {
+        assert.equal(err.code, ErrorCodes.REMOTE_REF_NOT_FOUND);
+        assert.equal(
+          String(err.message ?? '').includes(sentinel),
+          false,
+          'token sentinel leaked into error message'
+        );
+        return true;
+      }
+    );
+
+    for (const entry of logger.entries) {
+      const serialized = JSON.stringify(entry);
+      assert.equal(
+        serialized.includes(sentinel),
+        false,
+        `token sentinel leaked into log entry: ${serialized}`
+      );
+    }
+  } finally {
+    delete process.env.CRS_TEST_TOKEN_SENTINEL;
+  }
+});

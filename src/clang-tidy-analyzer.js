@@ -1,6 +1,8 @@
 import { execFile as cb } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs/promises';
 import { AppError } from './shared/app-error.js';
 import { ErrorCodes } from './shared/error-codes.js';
 
@@ -66,9 +68,13 @@ export function createClangTidyAnalyzer({
       const ext = path.extname(f.path).toLowerCase();
       if (!C_CPP.has(ext)) continue;
 
+      // Write the --export-fixes file to the OS temp dir (not projectDir) so a
+      // real clang-tidy run never leaves .clang-tidy-fixes-*.yaml behind in
+      // the user's project tree. The file is best-effort unlinked after the
+      // run; cwd stays projectDir so relative-path echo behavior is preserved.
       const outputFile = path.join(
-        projectDir,
-        '.clang-tidy-fixes-' + Buffer.from(f.path).toString('hex').slice(0, 12) + '.yaml'
+        os.tmpdir(),
+        'crs-clang-tidy-fixes-' + Buffer.from(f.path).toString('hex').slice(0, 12) + '.yaml'
       );
 
       try {
@@ -116,6 +122,10 @@ export function createClangTidyAnalyzer({
           throw new AppError(ErrorCodes.ANALYZER_FAILED, 'clang-tidy 执行失败', [f.path, String(err.message ?? err)]);
         }
         logAnalyzerSkipped(logger, `跳过 ${f.path}：${err.message ?? err}`);
+      } finally {
+        // Best-effort cleanup of the export-fixes temp file; never let an
+        // unlink failure mask the real result or abort the loop.
+        await fs.unlink(outputFile).catch(() => {});
       }
     }
 

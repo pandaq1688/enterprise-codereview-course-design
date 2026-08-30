@@ -684,6 +684,38 @@ test('PF-009 does not merge findings at same location with different ruleId', ()
   assert.equal(result.mergedFindingCount, 0);
 });
 
+test('PF-009 does not merge same-line AI findings (ruleId null) with different titles', () => {
+  // Regression: the same-line shortcut must not bypass the title-fingerprint
+  // check when BOTH findings are AI findings (ruleId null). Two distinct AI
+  // findings on the same file/line/category with different titles must both
+  // stay active (base-version behavior).
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        title: '空指针解引用',
+        description: 'p 可能为空时解引用',
+        evidence: 'p->x',
+        line_start: 3,
+        line_end: 3
+      }),
+      rawFinding({
+        title: '资源泄漏',
+        description: '未释放分配的内存',
+        evidence: 'malloc()',
+        line_start: 3,
+        line_end: 3
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  assert.equal(result.activeFindingCount, 2);
+  assert.equal(result.mergedFindingCount, 0);
+  assert.notEqual(result.findings[0].status, 'MERGED');
+  assert.notEqual(result.findings[1].status, 'MERGED');
+});
+
 test('exempt policies still apply to analyzer findings', () => {
   const result = applyPostReviewPolicy({
     rawFindings: [

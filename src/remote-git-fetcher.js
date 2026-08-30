@@ -22,6 +22,13 @@ function classifyGitError(stderr) {
 }
 
 export function createRemoteGitFetcher({ workspaceDir, ephemeral, fetchRetries, credentials, allowedRoots, logger }) {
+  function logFetch(level, event, message, extra = {}) {
+    if (!logger) return;
+    if (typeof logger.log === 'function') {
+      logger.log({ level, event, message, ...extra });
+    }
+  }
+
   async function runGit(args, { cwd, env, retries }) {
     let last;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -38,7 +45,13 @@ export function createRemoteGitFetcher({ workspaceDir, ephemeral, fetchRetries, 
   }
 
   async function fetch({ remoteUrl, ref }) {
+    // NOTE: never log remoteUrl or extraArgs here — for HTTPS remotes the URL
+    // may embed credentials and extraArgs carries the base64 token via
+    // http.extraHeader. Log only the derived repo name to satisfy AC-10's
+    // "日志不含 token/用户名明文" requirement.
+    const repoName = repoNameFromUrl(remoteUrl);
     const { env, extraArgs } = buildGitEnv(credentials);
+    logFetch('info', 'REMOTE_GIT_FETCH_START', `开始拉取远程仓库 ${repoName}`);
     let localDir;
     let cleanup;
     if (ephemeral) {
@@ -47,7 +60,7 @@ export function createRemoteGitFetcher({ workspaceDir, ephemeral, fetchRetries, 
     } else {
       const wsReal = await resolveRealPath(workspaceDir);
       if (allowedRoots) assertInsideAllowedRoots(wsReal, allowedRoots, workspaceDir);
-      localDir = path.join(wsReal, repoNameFromUrl(remoteUrl));
+      localDir = path.join(wsReal, repoName);
       await fs.mkdir(localDir, { recursive: true });
     }
     try {
@@ -61,8 +74,12 @@ export function createRemoteGitFetcher({ workspaceDir, ephemeral, fetchRetries, 
       }
       const real = await resolveRealPath(localDir);
       if (allowedRoots) assertInsideAllowedRoots(real, allowedRoots, localDir);
+      logFetch('info', 'REMOTE_GIT_FETCH_SUCCESS', `远程仓库 ${repoName} 拉取完成`);
       return { localDir: real, cleanup };
     } catch (err) {
+      logFetch('error', 'REMOTE_GIT_FETCH_FAILED', `远程仓库 ${repoName} 拉取失败`, {
+        errorCode: err?.code ?? null
+      });
       if (ephemeral) {
         await fs.rm(localDir, { recursive: true, force: true }).catch(() => {});
       }
