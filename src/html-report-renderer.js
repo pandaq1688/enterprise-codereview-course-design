@@ -21,9 +21,30 @@ function filterFindings(findings, predicate) {
  * @param {object} finding
  * @returns {string}
  */
+function renderSourceBadge(finding) {
+  if (finding.source === 'analyzer') {
+    const parts = [e(finding.analyzerId ?? 'analyzer')];
+    if (finding.ruleId) {
+      parts.push(e(finding.ruleId));
+    }
+    return `<span class="source-badge analyzer">${parts.join(' · ')}</span>`;
+  }
+  if (finding.source === 'ai') {
+    return '<span class="source-badge ai">AI</span>';
+  }
+  return '';
+}
+
+/**
+ * @param {object} finding
+ * @returns {string}
+ */
 function renderFinding(finding) {
+  const badge = renderSourceBadge(finding);
+  const badgeLine = badge ? `<p><strong>来源:</strong> ${badge}</p>` : '';
   return `<article class="finding">
   <h3>${e(finding.findingId)} — ${e(finding.title)}</h3>
+  ${badgeLine}
   <p><strong>风险:</strong> ${e(finding.finalRisk)}</p>
   <p><strong>状态:</strong> ${e(finding.status)}</p>
   <p>${e(finding.description)}</p>
@@ -69,6 +90,24 @@ function renderRuleLabel(rule) {
 }
 
 /**
+ * @param {object[]} shards
+ * @returns {string}
+ */
+function renderShardsSummary(shards) {
+  if (!Array.isArray(shards) || shards.length === 0) {
+    return '';
+  }
+  const items = shards
+    .map((shard) => {
+      const fileCount = (shard.files ?? []).length;
+      return `<li>分片 ${e(shard.index)}：${e(fileCount)} 个文件，${e(shard.charCount)} 字符</li>`;
+    })
+    .join('\n');
+  return `<h2>分片审计</h2>
+<ul>${items}</ul>`;
+}
+
+/**
  * @param {object} report
  * @returns {string}
  */
@@ -108,6 +147,7 @@ export function renderHtmlReport(report) {
     })
     .join('');
   const actionItems = recommendedActions.map((action) => `<li>${e(action)}</li>`).join('');
+  const shardsSection = renderShardsSummary(ai.shards);
 
   const sections = [
     `<h2>概要</h2>
@@ -154,6 +194,8 @@ ${renderDecisionTrail(findings) || '<p>无</p>'}`,
 </dl>
 <pre>${e(ai.rawOutput)}</pre>`,
 
+    shardsSection,
+
     `<h2>错误</h2>
 <ul>${errorItems || '<li>无</li>'}</ul>
 <h3>建议操作</h3>
@@ -171,6 +213,9 @@ ${renderDecisionTrail(findings) || '<p>无</p>'}`,
     h2 { border-bottom: 1px solid #ccc; padding-bottom: 0.25rem; margin-top: 2rem; }
     h3 { margin-top: 1rem; }
     .finding, .finding-decisions { border: 1px solid #ddd; padding: 1rem; margin: 1rem 0; border-radius: 4px; }
+    .source-badge { display: inline-block; font-size: 0.85em; padding: 0.15rem 0.5rem; border-radius: 3px; margin-left: 0.25rem; }
+    .source-badge.analyzer { background: #e8f4fd; color: #036; }
+    .source-badge.ai { background: #f0f0f0; color: #444; }
     pre { white-space: pre-wrap; word-break: break-word; background: #f5f5f5; padding: 1rem; border-radius: 4px; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
     dt { font-weight: bold; }
@@ -178,7 +223,7 @@ ${renderDecisionTrail(findings) || '<p>无</p>'}`,
   </style>
 </head>
 <body>
-${sections.join('\n\n')}
+${sections.filter(Boolean).join('\n\n')}
 </body>
 </html>`;
 }

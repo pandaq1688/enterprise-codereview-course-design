@@ -1086,6 +1086,96 @@ test('sharding: each shard receives a DISTINCT promptFile containing ONLY its ow
   }
 });
 
+// ---------- Task 10: report audit & HTML rendering ----------
+
+test('Task 10: sharded SUCCEEDED report ai.shards length matches shard count with index/files/charCount', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createLargeProjectFixture({});
+  let n = 0;
+  const provider = createShardCountingProvider({
+    rawOutputForCall: (callNum) => shardFindingsJson(callNum)
+  });
+  const config = shardingConfig(reportsDir, {
+    shardChars: 3000,
+    maxShards: 20,
+    maxConcurrency: 2
+  });
+  config.review.maxInputChars = 4000;
+  const service = createService({
+    reportsDir,
+    provider,
+    config,
+    idFactory: () => `t10s-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+
+  const report = await service.getReport(reviewId);
+  assert.ok(Array.isArray(report.ai.shards));
+  assert.equal(report.ai.shards.length, provider.calls);
+  for (const s of report.ai.shards) {
+    assert.ok(typeof s.index === 'number');
+    assert.ok(Array.isArray(s.files) && s.files.length >= 1);
+    assert.ok(typeof s.files[0].path === 'string');
+    assert.ok(typeof s.charCount === 'number' && s.charCount > 0);
+  }
+});
+
+test('Task 10: non-sharded report has no ai.shards', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const service = createService({
+    reportsDir,
+    provider,
+    idFactory: () => `t10n-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  await waitUntilDone(service, reviewId);
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.ai.shards, undefined);
+});
+
+test('Task 10: analyzer finding retains source, analyzerId, and ruleId in report', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const analyzerFinding = analyzerRawFinding({
+    title: '未使用的变量',
+    ruleId: 'misc-unused-parameters'
+  });
+  const analyzer = createFakeAnalyzer({ findings: [analyzerFinding] });
+  const service = createService({
+    reportsDir,
+    provider,
+    analyzer,
+    config: analyzerEnabledConfig(reportsDir),
+    idFactory: () => `t10a-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  await waitUntilDone(service, reviewId);
+
+  const report = await service.getReport(reviewId);
+  const analyzerReportFinding = report.result.findings.find((f) => f.source === 'analyzer');
+  assert.ok(analyzerReportFinding, 'expected analyzer finding in report');
+  assert.equal(analyzerReportFinding.source, 'analyzer');
+  assert.equal(analyzerReportFinding.analyzerId, 'clang-tidy');
+  assert.equal(analyzerReportFinding.ruleId, 'misc-unused-parameters');
+});
+
 test('sharding: maxConcurrency=2 yields unique outputFile paths across concurrent shards', async () => {
   const reportsDir = await makeTempDir('crs-reports-');
   const { projectDir, requirementFile } = await createLargeProjectFixture({});
