@@ -152,3 +152,86 @@ test('validateCreateReviewRequest normalizes paths and display segments', async 
   assert.ok(normalized.checklist.path);
   assert.deepEqual(normalized.checklist.includePaths, ['src']);
 });
+
+async function setupRequirementOnly(root) {
+  const req = path.join(root, 'docs', 'requirement.md');
+  await fs.mkdir(path.dirname(req), { recursive: true });
+  await fs.writeFile(req, '# req\n', 'utf8');
+  return { requirementFile: req };
+}
+
+test('validateCreateReviewRequest REMOTE_GIT rejects missing remoteUrl', async () => {
+  const root = await makeAllowedRoot();
+  const { requirementFile } = await setupRequirementOnly(root);
+  await assert.rejects(
+    () => validateCreateReviewRequest({
+      sourceMode: 'REMOTE_GIT',
+      ref: 'main',
+      requirementFile
+    }, configWithRoot(root)),
+    (err) => err.code === ErrorCodes.INVALID_REQUEST && err.message === '缺少必填字段 remoteUrl'
+  );
+});
+
+test('validateCreateReviewRequest REMOTE_GIT rejects missing ref', async () => {
+  const root = await makeAllowedRoot();
+  const { requirementFile } = await setupRequirementOnly(root);
+  await assert.rejects(
+    () => validateCreateReviewRequest({
+      sourceMode: 'REMOTE_GIT',
+      remoteUrl: 'https://github.com/org/repo.git',
+      requirementFile
+    }, configWithRoot(root)),
+    (err) => err.code === ErrorCodes.INVALID_REQUEST && err.message === '缺少必填字段 ref'
+  );
+});
+
+test('validateCreateReviewRequest REMOTE_GIT rejects illegal reviewMode', async () => {
+  const root = await makeAllowedRoot();
+  const { requirementFile } = await setupRequirementOnly(root);
+  await assert.rejects(
+    () => validateCreateReviewRequest({
+      sourceMode: 'REMOTE_GIT',
+      remoteUrl: 'https://github.com/org/repo.git',
+      ref: 'main',
+      reviewMode: 'WEIRD',
+      requirementFile
+    }, configWithRoot(root)),
+    (err) => err.code === ErrorCodes.INVALID_REQUEST && err.message === 'reviewMode 非法'
+  );
+});
+
+test('validateCreateReviewRequest REMOTE_GIT normalizes valid request', async () => {
+  const root = await makeAllowedRoot();
+  const { requirementFile } = await setupRequirementOnly(root);
+  const remoteUrl = 'https://github.com/org/my-repo.git';
+  const normalized = await validateCreateReviewRequest({
+    sourceMode: 'REMOTE_GIT',
+    remoteUrl,
+    ref: 'feature/x',
+    requirementFile
+  }, configWithRoot(root));
+  assert.equal(normalized.sourceMode, 'REMOTE_GIT');
+  assert.equal(normalized.remoteUrl, remoteUrl);
+  assert.equal(normalized.ref, 'feature/x');
+  assert.equal(normalized.reviewMode, 'GIT_CHANGES');
+  assert.equal(normalized.projectDir, null);
+  assert.equal(normalized.projectDirDisplay, null);
+  assert.equal(normalized.projectName, 'my-repo');
+  assert.match(normalized.requirementFileDisplay, /docs\/requirement\.md$/);
+});
+
+test('validateCreateReviewRequest REMOTE_GIT does not require local git work tree', async () => {
+  const root = await makeAllowedRoot();
+  const { requirementFile } = await setupRequirementOnly(root);
+  const normalized = await validateCreateReviewRequest({
+    sourceMode: 'REMOTE_GIT',
+    remoteUrl: 'https://github.com/org/repo.git',
+    ref: 'main',
+    reviewMode: 'FULL_DIRECTORY',
+    requirementFile
+  }, configWithRoot(root));
+  assert.equal(normalized.sourceMode, 'REMOTE_GIT');
+  assert.equal(normalized.reviewMode, 'FULL_DIRECTORY');
+  assert.equal(normalized.projectDir, null);
+});

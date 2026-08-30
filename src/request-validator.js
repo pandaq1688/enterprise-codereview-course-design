@@ -4,10 +4,11 @@ import { promisify } from 'node:util';
 import { AppError } from './shared/app-error.js';
 import { ErrorCodes } from './shared/error-codes.js';
 import { resolveRealPath, assertInsideAllowedRoots } from './shared/path-security.js';
+import { repoNameFromUrl } from './remote-git-fetcher.js';
 
 const execFile = promisify(execFileCb);
 
-const SOURCE_MODES = new Set(['GIT_CHANGES', 'FULL_DIRECTORY']);
+const SOURCE_MODES = new Set(['GIT_CHANGES', 'FULL_DIRECTORY', 'REMOTE_GIT']);
 const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown']);
 
 /**
@@ -61,9 +62,6 @@ export async function validateCreateReviewRequest(body, config) {
     throw new AppError(ErrorCodes.INVALID_REQUEST, 'allowedRoots 必须至少配置一项', []);
   }
 
-  if (!body.projectDir || typeof body.projectDir !== 'string') {
-    throw new AppError(ErrorCodes.INVALID_REQUEST, '缺少必填字段 projectDir', []);
-  }
   if (!body.requirementFile || typeof body.requirementFile !== 'string') {
     throw new AppError(ErrorCodes.INVALID_REQUEST, '缺少必填字段 requirementFile', []);
   }
@@ -71,7 +69,36 @@ export async function validateCreateReviewRequest(body, config) {
     throw new AppError(ErrorCodes.INVALID_REQUEST, 'sourceMode 非法', []);
   }
 
-  const projectDir = await resolveAndAssert(body.projectDir, allowedRoots);
+  let remoteUrl = null;
+  let ref = null;
+  let reviewMode = null;
+  let projectDir = null;
+  let projectName = null;
+  let projectDirDisplay = null;
+
+  if (body.sourceMode === 'REMOTE_GIT') {
+    if (!body.remoteUrl || typeof body.remoteUrl !== 'string') {
+      throw new AppError(ErrorCodes.INVALID_REQUEST, '缺少必填字段 remoteUrl', []);
+    }
+    if (!body.ref || typeof body.ref !== 'string') {
+      throw new AppError(ErrorCodes.INVALID_REQUEST, '缺少必填字段 ref', []);
+    }
+    reviewMode = body.reviewMode ?? 'GIT_CHANGES';
+    if (reviewMode !== 'GIT_CHANGES' && reviewMode !== 'FULL_DIRECTORY') {
+      throw new AppError(ErrorCodes.INVALID_REQUEST, 'reviewMode 非法', []);
+    }
+    remoteUrl = body.remoteUrl;
+    ref = body.ref;
+    projectName = repoNameFromUrl(remoteUrl);
+  } else {
+    if (!body.projectDir || typeof body.projectDir !== 'string') {
+      throw new AppError(ErrorCodes.INVALID_REQUEST, '缺少必填字段 projectDir', []);
+    }
+    projectDir = await resolveAndAssert(body.projectDir, allowedRoots);
+    projectName = path.basename(projectDir);
+    projectDirDisplay = toDisplayPath(projectDir);
+  }
+
   const requirementFile = await resolveAndAssert(body.requirementFile, allowedRoots);
 
   if (!isMarkdownPath(requirementFile)) {
@@ -107,14 +134,17 @@ export async function validateCreateReviewRequest(body, config) {
     projectDir,
     requirementFile,
     sourceMode: body.sourceMode,
+    remoteUrl,
+    ref,
+    reviewMode,
     checklist: {
       enabled: checklistEnabled,
       path: checklistPath,
       includePaths: checklistIncludePaths,
       excludePaths: checklistExcludePaths
     },
-    projectName: path.basename(projectDir),
-    projectDirDisplay: toDisplayPath(projectDir),
+    projectName,
+    projectDirDisplay,
     requirementFileDisplay: toDisplayPath(requirementFile),
     checklistFileDisplay: checklistPath ? toDisplayPath(checklistPath) : null
   };
