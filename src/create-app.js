@@ -17,6 +17,7 @@ import { applyPostReviewPolicy } from './post-review-policy.js';
 import { createCursorReviewProvider } from './providers/cursor-review-provider.js';
 import { createRemoteLlmReviewProvider } from './providers/remote-llm-review-provider.js';
 import { createRemoteGitFetcher } from './remote-git-fetcher.js';
+import { createClangTidyAnalyzer } from './clang-tidy-analyzer.js';
 import { createWebAdapter } from './web/web-adapter.js';
 
 /**
@@ -110,6 +111,18 @@ export async function createApp(overrides = {}) {
     overrides.ruleResolver ??
     ((opts) => resolveRules({ ...opts, rulesDir: opts.rulesDir ?? rulesDir }));
 
+  const analyzer =
+    overrides.analyzer ??
+    (config.analyzer?.enabled
+      ? createClangTidyAnalyzer({
+          command: config.analyzer.command,
+          args: config.analyzer.args,
+          timeoutMs: config.analyzer.timeoutMs,
+          onAnalyzerError: config.analyzer.onAnalyzerError,
+          logger
+        })
+      : null);
+
   const jobService =
     overrides.jobService ??
     createReviewJobService({
@@ -126,7 +139,8 @@ export async function createApp(overrides = {}) {
       clock,
       logger,
       idFactory: overrides.idFactory ?? (() => repository.createReviewId()),
-      remoteGitFetcher
+      remoteGitFetcher,
+      analyzer
     });
 
   const validateRequest = overrides.validateRequest ?? validateCreateReviewRequest;

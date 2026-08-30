@@ -19,6 +19,7 @@ import { applyPostReviewPolicy } from '../src/post-review-policy.js';
 import { toDisplayPath } from '../src/request-validator.js';
 import { AppError } from '../src/shared/app-error.js';
 import { ErrorCodes } from '../src/shared/error-codes.js';
+import { analyzerRawFinding } from './helpers/policy-fixtures.js';
 
 const HIGH_FINDING_JSON = JSON.stringify({
   summary: '发现高风险问题',
@@ -91,12 +92,23 @@ function defaultConfig(reportsDir) {
   };
 }
 
-function createService({ reportsDir, provider, idFactory, clock, config, remoteGitFetcher }) {
+function createService({
+  reportsDir,
+  provider,
+  idFactory,
+  clock,
+  config,
+  remoteGitFetcher,
+  analyzer,
+  logger: loggerOverride
+}) {
   const repository = createFileReportRepository({ reportsDir, idFactory });
-  const logger = createLogger({
-    stream: { write() {} },
-    clock: clock ?? createSystemClock()
-  });
+  const logger =
+    loggerOverride ??
+    createLogger({
+      stream: { write() {} },
+      clock: clock ?? createSystemClock()
+    });
   return createReviewJobService({
     config: config ?? defaultConfig(reportsDir),
     gitChangedCollector: collectGitChangedSource,
@@ -111,8 +123,47 @@ function createService({ reportsDir, provider, idFactory, clock, config, remoteG
     clock: clock ?? createSystemClock(),
     logger,
     idFactory: idFactory ?? (() => repository.createReviewId()),
-    remoteGitFetcher
+    remoteGitFetcher,
+    analyzer
   });
+}
+
+function analyzerEnabledConfig(reportsDir, overrides = {}) {
+  return {
+    ...defaultConfig(reportsDir),
+    analyzer: {
+      enabled: true,
+      command: 'clang-tidy',
+      args: [],
+      timeoutMs: 60000,
+      onAnalyzerError: 'skip',
+      ...overrides
+    }
+  };
+}
+
+/**
+ * @param {{
+ *   findings?: object[],
+ *   throwError?: AppError | null,
+ *   onAnalyze?: (args: object) => void
+ * }} opts
+ */
+function createFakeAnalyzer(opts = {}) {
+  const { findings = [], throwError = null, onAnalyze } = opts;
+  let analyzeCalls = 0;
+  const analyzer = {
+    async analyze(args) {
+      analyzeCalls += 1;
+      onAnalyze?.(args);
+      if (throwError) throw throwError;
+      return findings;
+    },
+    get analyzeCalls() {
+      return analyzeCalls;
+    }
+  };
+  return analyzer;
 }
 
 function remoteGitRequest(requirementFile, opts = {}) {
@@ -471,6 +522,165 @@ test('GIT_CHANGES without remoteGitFetcher behaves unchanged', async () => {
   const report = await service.getReport(reviewId);
   assert.equal(report.request.sourceMode, 'GIT_CHANGES');
   assert.equal(report.request.remoteUrl, null);
+});
+
+test('analyzer enabled: merges analyzer findings with AI findings', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const analyzerFinding = analyzerRawFinding({
+    title: '未使用的变量',
+    risk_level: 'LOW',
+    description: '变量 x 未使用',
+    file_path: 'src/a.cpp',
+    line_start: 2,
+    line_end: 2
+  });
+  const analyzer = createFakeAnalyzer({ findings: [analyzerFinding] });
+  const service = createService({
+    reportsDir,
+    provider,
+    analyzer,
+    config: analyzerEnabledConfig(reportsDir),
+    idFactory: () => `an-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+
+  const report = await service.getReport(reviewId);
+  const sources = report.result.findings.map((f) => f.source);
+  assert.ok(sources.includes('ai'));
+  assert.ok(sources.includes('analyzer'));
+  assert.equal(analyzer.analyzeCalls, 1);
+});
+
+test('analyzer ANALYZER_FAILED with onAnalyzerError skip: SUCCEEDED with AI findings and ANALYZER_SKIPPED log', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const logEntries = [];
+  const logger = createLogger({
+    stream: {
+      write(chunk) {
+        logEntries.push(JSON.parse(String(chunk)));
+      }
+    },
+    clock: createSystemClock()
+  });
+  const analyzer = createFakeAnalyzer({
+    throwError: new AppError(ErrorCodes.ANALYZER_FAILED, 'clang-tidy 执行失败', [])
+  });
+  const service = createService({
+    reportsDir,
+    provider,
+    analyzer,
+    logger,
+    config: analyzerEnabledConfig(reportsDir, { onAnalyzerError: 'skip' }),
+    idFactory: () => `ans-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+
+  const report = await service.getReport(reviewId);
+  assert.ok(report.result.findings.length >= 1);
+  assert.ok(
+    logEntries.some(
+      (e) =>
+        e.event === ErrorCodes.ANALYZER_SKIPPED ||
+        (e.errorCode === ErrorCodes.ANALYZER_SKIPPED && e.level === 'warn')
+    )
+  );
+});
+
+test('analyzer ANALYZER_FAILED with onAnalyzerError fail: task FAILED', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const analyzer = createFakeAnalyzer({
+    throwError: new AppError(ErrorCodes.ANALYZER_FAILED, 'clang-tidy 执行失败', [])
+  });
+  const service = createService({
+    reportsDir,
+    provider,
+    analyzer,
+    config: analyzerEnabledConfig(reportsDir, { onAnalyzerError: 'fail' }),
+    idFactory: () => `anf-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'FAILED');
+  assert.equal(job.error.code, ErrorCodes.ANALYZER_FAILED);
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.errors[0].code, ErrorCodes.ANALYZER_FAILED);
+});
+
+test('analyzer null: no analyzer findings (regression)', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const service = createService({
+    reportsDir,
+    provider,
+    analyzer: null,
+    idFactory: () => `ann-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+
+  const report = await service.getReport(reviewId);
+  assert.ok(report.result.findings.every((f) => f.source === 'ai' || f.source == null));
+  assert.ok(!report.result.findings.some((f) => f.source === 'analyzer'));
+});
+
+test('analyzer.enabled=false: analyze not called, AI findings normal', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { projectDir, requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const analyzer = createFakeAnalyzer({
+    findings: [analyzerRawFinding({ title: 'should-not-appear' })]
+  });
+  const service = createService({
+    reportsDir,
+    provider,
+    analyzer,
+    config: {
+      ...defaultConfig(reportsDir),
+      analyzer: { enabled: false }
+    },
+    idFactory: () => `and-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(normalizedRequest(projectDir, requirementFile), {
+    triggerType: 'MANUAL'
+  });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+  assert.equal(analyzer.analyzeCalls, 0);
+
+  const report = await service.getReport(reviewId);
+  assert.ok(report.result.findings.length >= 1);
+  assert.ok(!report.result.findings.some((f) => f.source === 'analyzer'));
 });
 
 test('unexpected non-AppError failures map to INTERNAL_ERROR with generic Chinese message', async () => {

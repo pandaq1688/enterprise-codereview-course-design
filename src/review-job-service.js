@@ -71,6 +71,23 @@ function resolveReviewTimeoutMs(config) {
   return config?.cursor?.timeoutMs;
 }
 
+function logAnalyzerSkipped(logger, reviewId) {
+  const message = '静态分析器失败，已跳过';
+  if (!logger) return;
+  if (typeof logger.log === 'function') {
+    logger.log({
+      level: 'warn',
+      event: ErrorCodes.ANALYZER_SKIPPED,
+      reviewId,
+      stage: 'FILTERING',
+      errorCode: ErrorCodes.ANALYZER_SKIPPED,
+      message
+    });
+    return;
+  }
+  logger.warn?.(`[${ErrorCodes.ANALYZER_SKIPPED}] ${message}`);
+}
+
 /**
  * @param {object} deps
  */
@@ -89,7 +106,8 @@ export function createReviewJobService(deps) {
     clock,
     logger,
     idFactory,
-    remoteGitFetcher
+    remoteGitFetcher,
+    analyzer
   } = deps;
 
   /** @type {Map<string, object>} */
@@ -415,8 +433,32 @@ export function createReviewJobService(deps) {
         return;
       }
 
+      const aiFindings = parsed.findings;
+      let mergedRaw = aiFindings;
+      if (analyzer && config.analyzer?.enabled) {
+        try {
+          const analyzerFindings = await analyzer.analyze({
+            projectDir: job.effectiveProjectDir,
+            files: collected.source.files,
+            signal: currentAbort.signal
+          });
+          mergedRaw = [...aiFindings, ...analyzerFindings];
+        } catch (err) {
+          if (
+            err instanceof AppError &&
+            err.code === ErrorCodes.ANALYZER_FAILED &&
+            config.analyzer?.onAnalyzerError === 'skip'
+          ) {
+            logAnalyzerSkipped(logger, job.reviewId);
+            mergedRaw = aiFindings;
+          } else {
+            throw err;
+          }
+        }
+      }
+
       const policyResult = policy({
-        rawFindings: parsed.findings,
+        rawFindings: mergedRaw,
         selectedFiles: collected.source.files,
         sourceMode: job.request.sourceMode
       });
