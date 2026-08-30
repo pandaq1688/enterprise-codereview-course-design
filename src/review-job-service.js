@@ -88,7 +88,8 @@ export function createReviewJobService(deps) {
     repository,
     clock,
     logger,
-    idFactory
+    idFactory,
+    remoteGitFetcher
   } = deps;
 
   /** @type {Map<string, object>} */
@@ -120,20 +121,37 @@ export function createReviewJobService(deps) {
       maxChars: limits.maxRequirementChars
     });
 
+    let projectDir = normalizedRequest.projectDir;
+    let innerSourceMode = normalizedRequest.sourceMode;
+    let fetchedCleanup = null;
+
+    if (normalizedRequest.sourceMode === 'REMOTE_GIT') {
+      if (!remoteGitFetcher) {
+        throw new AppError(ErrorCodes.INVALID_REQUEST, '未配置远程 Git 拉取', []);
+      }
+      const fetched = await remoteGitFetcher.fetch({
+        remoteUrl: normalizedRequest.remoteUrl,
+        ref: normalizedRequest.ref
+      });
+      projectDir = fetched.localDir;
+      fetchedCleanup = fetched.cleanup ?? null;
+      innerSourceMode = normalizedRequest.reviewMode;
+    }
+
     const collectOpts = {
-      projectDir: normalizedRequest.projectDir,
+      projectDir,
       maxFiles: limits.maxFiles,
       maxFileChars: limits.maxFileChars,
       maxInputChars: limits.maxInputChars
     };
 
     const source =
-      normalizedRequest.sourceMode === 'GIT_CHANGES'
+      innerSourceMode === 'GIT_CHANGES'
         ? await gitChangedCollector(collectOpts)
         : await fullDirectoryCollector(collectOpts);
 
     const { rules } = await ruleResolver({
-      projectDir: normalizedRequest.projectDir,
+      projectDir,
       files: source.files,
       checklist: normalizedRequest.checklist
     });
@@ -146,7 +164,7 @@ export function createReviewJobService(deps) {
       rules
     });
 
-    return { requirement, source, rules, inputHash };
+    return { requirement, source, rules, inputHash, fetchedCleanup };
   }
 
   /**
@@ -178,7 +196,9 @@ export function createReviewJobService(deps) {
       checklistFileDisplay: req.checklistFileDisplay,
       checklistIncludePaths: req.checklist?.includePaths ?? [],
       checklistExcludePaths: req.checklist?.excludePaths ?? [],
-      triggerType: job.triggerType
+      triggerType: job.triggerType,
+      reviewMode: req.reviewMode ?? null,
+      remoteUrl: req.remoteUrl ?? null
     };
     if (includeAbs) {
       request.projectDir = req.projectDir;
@@ -318,6 +338,7 @@ export function createReviewJobService(deps) {
       });
 
       collected = await collectInputs(job.request);
+      job._fetchedCleanup = collected.fetchedCleanup ?? null;
       const prompt = promptBuilder({
         requirementText: collected.requirement.text,
         sourceMode: job.request.sourceMode,
@@ -458,6 +479,13 @@ export function createReviewJobService(deps) {
           await fs.unlink(p);
         } catch {
           // best-effort; Cursor provider may already have removed them
+        }
+      }
+      if (job._fetchedCleanup) {
+        try {
+          await job._fetchedCleanup();
+        } catch {
+          // best-effort ephemeral workspace cleanup
         }
       }
       logger.log({

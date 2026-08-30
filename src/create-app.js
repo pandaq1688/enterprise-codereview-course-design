@@ -16,6 +16,7 @@ import { parseReviewOutput } from './review-result-parser.js';
 import { applyPostReviewPolicy } from './post-review-policy.js';
 import { createCursorReviewProvider } from './providers/cursor-review-provider.js';
 import { createRemoteLlmReviewProvider } from './providers/remote-llm-review-provider.js';
+import { createRemoteGitFetcher } from './remote-git-fetcher.js';
 import { createWebAdapter } from './web/web-adapter.js';
 
 /**
@@ -90,6 +91,21 @@ export async function createApp(overrides = {}) {
 
   const provider = overrides.provider ?? createConfiguredProvider(config);
 
+  const remoteGitFetcher =
+    overrides.remoteGitFetcher ??
+    createRemoteGitFetcher({
+      workspaceDir: path.resolve(config.remoteGit?.workspaceDir ?? './data/remotes'),
+      ephemeral: Boolean(config.remoteGit?.ephemeral),
+      fetchRetries: config.remoteGit?.fetchRetries ?? 3,
+      credentials: config.remoteGit?.credentials ?? {
+        type: 'https',
+        tokenEnv: '',
+        usernameEnv: ''
+      },
+      allowedRoots: config.security.allowedRoots,
+      logger
+    });
+
   const ruleResolver =
     overrides.ruleResolver ??
     ((opts) => resolveRules({ ...opts, rulesDir: opts.rulesDir ?? rulesDir }));
@@ -109,7 +125,8 @@ export async function createApp(overrides = {}) {
       repository,
       clock,
       logger,
-      idFactory: overrides.idFactory ?? (() => repository.createReviewId())
+      idFactory: overrides.idFactory ?? (() => repository.createReviewId()),
+      remoteGitFetcher
     });
 
   const validateRequest = overrides.validateRequest ?? validateCreateReviewRequest;

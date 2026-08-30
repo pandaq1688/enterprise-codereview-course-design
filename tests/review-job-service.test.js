@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { makeTempDir } from './helpers/temp-workspace.js';
+import { makeGitRepo, writeFile, git } from './helpers/temp-git-repo.js';
 import { createFakeReviewProvider } from './helpers/fake-review-provider.js';
 import { createReviewJobService } from '../src/review-job-service.js';
 import { createFileReportRepository } from '../src/file-report-repository.js';
@@ -16,6 +17,8 @@ import { buildPrompt } from '../src/prompt-builder.js';
 import { parseReviewOutput } from '../src/review-result-parser.js';
 import { applyPostReviewPolicy } from '../src/post-review-policy.js';
 import { toDisplayPath } from '../src/request-validator.js';
+import { AppError } from '../src/shared/app-error.js';
+import { ErrorCodes } from '../src/shared/error-codes.js';
 
 const HIGH_FINDING_JSON = JSON.stringify({
   summary: '发现高风险问题',
@@ -88,7 +91,7 @@ function defaultConfig(reportsDir) {
   };
 }
 
-function createService({ reportsDir, provider, idFactory, clock, config }) {
+function createService({ reportsDir, provider, idFactory, clock, config, remoteGitFetcher }) {
   const repository = createFileReportRepository({ reportsDir, idFactory });
   const logger = createLogger({
     stream: { write() {} },
@@ -107,8 +110,41 @@ function createService({ reportsDir, provider, idFactory, clock, config }) {
     repository,
     clock: clock ?? createSystemClock(),
     logger,
-    idFactory: idFactory ?? (() => repository.createReviewId())
+    idFactory: idFactory ?? (() => repository.createReviewId()),
+    remoteGitFetcher
   });
+}
+
+function remoteGitRequest(requirementFile, opts = {}) {
+  const remoteUrl = opts.remoteUrl ?? 'https://github.com/org/my-repo.git';
+  return {
+    projectDir: null,
+    requirementFile,
+    sourceMode: 'REMOTE_GIT',
+    remoteUrl,
+    ref: opts.ref ?? 'main',
+    reviewMode: opts.reviewMode ?? 'FULL_DIRECTORY',
+    checklist: {
+      enabled: false,
+      path: null,
+      includePaths: ['.'],
+      excludePaths: []
+    },
+    projectName: 'my-repo',
+    projectDirDisplay: null,
+    requirementFileDisplay: toDisplayPath(requirementFile),
+    checklistFileDisplay: null
+  };
+}
+
+async function createFakeFetcherWithA() {
+  const localDir = await makeTempDir('crs-remote-');
+  await fs.writeFile(path.join(localDir, 'a.c'), 'int main() { return 0; }\n', 'utf8');
+  return {
+    async fetch() {
+      return { localDir };
+    }
+  };
 }
 
 async function waitUntilDone(service, reviewId, timeoutMs = 10000) {
@@ -285,6 +321,119 @@ test('provider=cursor uses cursor.timeoutMs', async () => {
   });
   await waitUntilDone(service, reviewId);
   assert.equal(seenTimeout, 333_333);
+});
+
+test('REMOTE_GIT: fetch then collect succeeds with sourceMode and remoteUrl in report', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { requirementFile } = await createProjectFixture();
+  const remoteUrl = 'https://github.com/org/my-repo.git';
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const remoteGitFetcher = await createFakeFetcherWithA();
+  const service = createService({
+    reportsDir,
+    provider,
+    remoteGitFetcher,
+    idFactory: () => `rg-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(
+    remoteGitRequest(requirementFile, { remoteUrl, reviewMode: 'FULL_DIRECTORY' }),
+    { triggerType: 'MANUAL' }
+  );
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.request.sourceMode, 'REMOTE_GIT');
+  assert.equal(report.request.reviewMode, 'FULL_DIRECTORY');
+  assert.equal(report.request.remoteUrl, remoteUrl);
+  assert.ok(report.source.files.some((f) => f.path === 'a.c' || f.path.endsWith('a.c')));
+});
+
+test('REMOTE_GIT: fetch REMOTE_REF_NOT_FOUND yields FAILED report', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { requirementFile } = await createProjectFixture();
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const remoteGitFetcher = {
+    async fetch() {
+      throw new AppError(ErrorCodes.REMOTE_REF_NOT_FOUND, 'ref not found', []);
+    }
+  };
+  const service = createService({
+    reportsDir,
+    provider,
+    remoteGitFetcher,
+    idFactory: () => `rgf-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(remoteGitRequest(requirementFile), { triggerType: 'MANUAL' });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'FAILED');
+  assert.equal(job.error.code, 'REMOTE_REF_NOT_FOUND');
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.status, 'FAILED');
+  assert.equal(report.errors[0].code, 'REMOTE_REF_NOT_FOUND');
+});
+
+test('REMOTE_GIT: ephemeral fetch cleanup called once after job completes', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const { requirementFile } = await createProjectFixture();
+  let n = 0;
+  let cleanupCalls = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const remoteGitFetcher = {
+    async fetch() {
+      const localDir = await makeTempDir('crs-ephemeral-');
+      await fs.writeFile(path.join(localDir, 'a.c'), 'x\n', 'utf8');
+      return {
+        localDir,
+        async cleanup() {
+          cleanupCalls += 1;
+        }
+      };
+    }
+  };
+  const service = createService({
+    reportsDir,
+    provider,
+    remoteGitFetcher,
+    idFactory: () => `rgc-${++n}`
+  });
+
+  const { reviewId } = service.enqueue(remoteGitRequest(requirementFile), { triggerType: 'MANUAL' });
+  await waitUntilDone(service, reviewId);
+  assert.equal(cleanupCalls, 1);
+});
+
+test('GIT_CHANGES without remoteGitFetcher behaves unchanged', async () => {
+  const reportsDir = await makeTempDir('crs-reports-');
+  const projectDir = await makeGitRepo();
+  await writeFile(projectDir, 'src/a.cpp', 'int* p = 0;\np->x;\n');
+  await git(projectDir, ['add', '.']);
+  await git(projectDir, ['commit', '-m', 'init']);
+  await writeFile(projectDir, 'src/a.cpp', 'int x = 1;\nint* p = 0;\np->x;\n');
+  const requirementFile = path.join(projectDir, 'req.md');
+  await fs.writeFile(requirementFile, '# 需求\n返回 0\n', 'utf8');
+  let n = 0;
+  const provider = createFakeReviewProvider({ rawOutput: HIGH_FINDING_JSON });
+  const service = createService({
+    reportsDir,
+    provider,
+    idFactory: () => `gc-${++n}`
+  });
+
+  const req = normalizedRequest(projectDir, requirementFile);
+  req.sourceMode = 'GIT_CHANGES';
+  const { reviewId } = service.enqueue(req, { triggerType: 'MANUAL' });
+  const job = await waitUntilDone(service, reviewId);
+  assert.equal(job.status, 'SUCCEEDED');
+
+  const report = await service.getReport(reviewId);
+  assert.equal(report.request.sourceMode, 'GIT_CHANGES');
+  assert.equal(report.request.remoteUrl, null);
 });
 
 test('unexpected non-AppError failures map to INTERNAL_ERROR with generic Chinese message', async () => {
