@@ -15,6 +15,15 @@ export function rawFinding(overrides = {}) {
   };
 }
 
+export function analyzerRawFinding(overrides = {}) {
+  return rawFinding({
+    source: 'analyzer',
+    analyzerId: 'clang-tidy',
+    ruleId: 'misc-unused',
+    ...overrides
+  });
+}
+
 export function selected(path = 'src/a.cpp', changedLines = [3], lineCount = 10, status = 'MODIFIED') {
   return { path, changedLines, lineCount, status };
 }

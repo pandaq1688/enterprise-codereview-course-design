@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { applyPostReviewPolicy } from '../src/post-review-policy.js';
-import { rawFinding, selected } from './helpers/policy-fixtures.js';
+import { analyzerRawFinding, rawFinding, selected } from './helpers/policy-fixtures.js';
 
 function decision(finding, policyId) {
   return finding.decisions.find((d) => d.policyId === policyId);
@@ -597,4 +597,110 @@ test('PF-010 recomputes overallRisk from active findings only', () => {
   assert.equal(allExempt.activeFindingCount, 0);
   assert.equal(allExempt.exemptedFindingCount, 1);
   assert.equal(allExempt.mergedFindingCount, 0);
+});
+
+test('normalizeFinding injects source ai and null analyzerId/ruleId for AI findings', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [rawFinding({ line_start: 3, line_end: 3 })],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  const f = result.findings[0];
+  assert.equal(f.source, 'ai');
+  assert.equal(f.analyzerId, null);
+  assert.equal(f.ruleId, null);
+});
+
+test('normalizeFinding preserves analyzer source, analyzerId, and ruleId', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      analyzerRawFinding({
+        line_start: 3,
+        line_end: 3,
+        title: 'unused variable',
+        description: 'variable x is unused'
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  const f = result.findings[0];
+  assert.equal(f.source, 'analyzer');
+  assert.equal(f.analyzerId, 'clang-tidy');
+  assert.equal(f.ruleId, 'misc-unused');
+});
+
+test('PF-009 merges cross-source findings with same file, line, category, and ruleId', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      rawFinding({
+        title: 'AI unused variable',
+        description: 'x is unused',
+        line_start: 3,
+        line_end: 3,
+        ruleId: 'misc-unused'
+      }),
+      analyzerRawFinding({
+        title: 'clang-tidy unused variable',
+        description: 'warning: unused variable x',
+        line_start: 3,
+        line_end: 3,
+        ruleId: 'misc-unused'
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  assert.equal(result.activeFindingCount, 1);
+  assert.equal(result.mergedFindingCount, 1);
+  assert.equal(result.findings[1].status, 'MERGED');
+});
+
+test('PF-009 does not merge findings at same location with different ruleId', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      analyzerRawFinding({
+        title: 'unused variable',
+        line_start: 3,
+        line_end: 3,
+        ruleId: 'misc-unused'
+      }),
+      analyzerRawFinding({
+        title: 'different check',
+        line_start: 3,
+        line_end: 3,
+        ruleId: 'bugprone-use-after-move',
+        description: 'use after move detected'
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  assert.equal(result.activeFindingCount, 2);
+  assert.equal(result.mergedFindingCount, 0);
+});
+
+test('exempt policies still apply to analyzer findings', () => {
+  const result = applyPostReviewPolicy({
+    rawFindings: [
+      analyzerRawFinding({
+        file_path: 'src/other.cpp',
+        line_start: 1,
+        line_end: 1
+      })
+    ],
+    selectedFiles: [selected('src/a.cpp', [3], 10)],
+    sourceMode: 'FULL_DIRECTORY'
+  });
+
+  const f = result.findings[0];
+  assert.equal(f.source, 'analyzer');
+  assert.equal(f.status, 'EXEMPTED');
+  const d = decision(f, 'PF-002');
+  assert.ok(d);
+  assert.equal(d.action, 'EXEMPTED');
 });

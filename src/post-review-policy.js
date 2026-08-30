@@ -296,6 +296,64 @@ function applyPf008(finding) {
 }
 
 /**
+ * @param {object} raw
+ * @param {number} index
+ * @returns {object}
+ */
+function normalizeFinding(raw, index) {
+  const decisions = [];
+  const finding = {
+    findingId: makeFindingId(index),
+    source: raw.source ?? 'ai',
+    analyzerId: raw.analyzerId ?? null,
+    ruleId: raw.ruleId ?? null,
+    category: raw.category,
+    title: raw.title ?? '',
+    description: raw.description ?? '',
+    filePath: raw.file_path ?? raw.filePath ?? '',
+    lineStart: raw.line_start ?? raw.lineStart,
+    lineEnd: raw.line_end ?? raw.lineEnd,
+    evidence: raw.evidence ?? '',
+    requirementReference: raw.requirement_reference ?? raw.requirementReference ?? '',
+    fixSuggestion: raw.fix_suggestion ?? raw.fixSuggestion ?? '',
+    fixCode: raw.fix_code ?? raw.fixCode ?? '',
+    originalRisk: null,
+    finalRisk: null,
+    status: 'KEPT',
+    decisions
+  };
+  return finding;
+}
+
+/**
+ * @param {object} primary
+ * @param {object} current
+ * @returns {boolean}
+ */
+function shouldMergeFindings(primary, current) {
+  if (primary.filePath !== current.filePath) return false;
+  if (primary.category !== current.category) return false;
+  if ((primary.ruleId ?? null) !== (current.ruleId ?? null)) return false;
+
+  const sameLine =
+    primary.lineStart !== null &&
+    current.lineStart !== null &&
+    primary.lineStart === current.lineStart;
+
+  if (sameLine) {
+    return true;
+  }
+
+  if (
+    normalizeTitleFingerprint(primary.title) !== normalizeTitleFingerprint(current.title)
+  ) {
+    return false;
+  }
+
+  return lineRangesOverlap(primary, current);
+}
+
+/**
  * @param {object[]} findings
  */
 function applyPf009(findings) {
@@ -306,12 +364,7 @@ function applyPf009(findings) {
     for (let j = 0; j < i; j++) {
       const primary = findings[j];
       if (primary.status === 'EXEMPTED' || primary.status === 'MERGED') continue;
-      if (primary.filePath !== current.filePath) continue;
-      if (primary.category !== current.category) continue;
-      if (normalizeTitleFingerprint(primary.title) !== normalizeTitleFingerprint(current.title)) {
-        continue;
-      }
-      if (!lineRangesOverlap(primary, current)) continue;
+      if (!shouldMergeFindings(primary, current)) continue;
 
       const before = current.finalRisk;
       const beforePrimary = primary.finalRisk;
@@ -345,7 +398,9 @@ function applyPf009(findings) {
         'MERGED',
         before,
         current.finalRisk,
-        '与已有 Finding 在路径、行号、类别与标题上重复，合并为从项'
+        primary.source !== current.source
+          ? '与已有 Finding 在路径、行号、类别与 ruleId 上重复（跨来源），合并为从项'
+          : '与已有 Finding 在路径、行号、类别与标题上重复，合并为从项'
       );
       break;
     }
@@ -388,24 +443,8 @@ export function applyPostReviewPolicy({ rawFindings, selectedFiles, sourceMode }
   );
 
   const findings = (rawFindings ?? []).map((raw, index) => {
-    const decisions = [];
-    const finding = {
-      findingId: makeFindingId(index),
-      category: raw.category,
-      title: raw.title ?? '',
-      description: raw.description ?? '',
-      filePath: raw.file_path ?? raw.filePath ?? '',
-      lineStart: raw.line_start ?? raw.lineStart,
-      lineEnd: raw.line_end ?? raw.lineEnd,
-      evidence: raw.evidence ?? '',
-      requirementReference: raw.requirement_reference ?? raw.requirementReference ?? '',
-      fixSuggestion: raw.fix_suggestion ?? raw.fixSuggestion ?? '',
-      fixCode: raw.fix_code ?? raw.fixCode ?? '',
-      originalRisk: null,
-      finalRisk: null,
-      status: 'KEPT',
-      decisions
-    };
+    const finding = normalizeFinding(raw, index);
+    const decisions = finding.decisions;
 
     // PF-001 字段与枚举归一化
     const beforeRiskRaw = String(raw.risk_level ?? raw.riskLevel ?? '');
