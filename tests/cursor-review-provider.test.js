@@ -12,6 +12,7 @@ import {
   SUCCESS_SCRIPT,
   TIMEOUT_SCRIPT,
   EXIT_NON_ZERO_SCRIPT,
+  FLAKY_THEN_OK_SCRIPT,
   LARGE_STDOUT_SCRIPT,
   LARGE_OUTPUT_FILE_SCRIPT,
   writeFakeCursorScript
@@ -134,7 +135,7 @@ test('times out with CURSOR_TIMEOUT', async () => {
   await assert.rejects(() => fs.access(outputFile), { code: 'ENOENT' });
 });
 
-test('non-zero exit yields CURSOR_EXIT_NON_ZERO', async () => {
+test('non-zero exit yields CURSOR_EXIT_NON_ZERO with stderr details', async () => {
   const dir = await makeTempDir('crs-cursor-exit-');
   const scriptPath = await writeFakeCursorScript(dir, 'fail-agent.mjs', EXIT_NON_ZERO_SCRIPT);
   const { promptFile, outputFile } = await makePromptAndOutput(dir);
@@ -143,7 +144,8 @@ test('non-zero exit yields CURSOR_EXIT_NON_ZERO', async () => {
     command: process.execPath,
     args: [scriptPath],
     timeoutMs: 10_000,
-    maxOutputChars: 100_000
+    maxOutputChars: 100_000,
+    maxRetries: 0
   });
 
   await assert.rejects(
@@ -154,7 +156,37 @@ test('non-zero exit yields CURSOR_EXIT_NON_ZERO', async () => {
         outputFile,
         timeoutMs: 10_000
       }),
-    (err) => err.code === ErrorCodes.CURSOR_EXIT_NON_ZERO
+    (err) =>
+      err.code === ErrorCodes.CURSOR_EXIT_NON_ZERO &&
+      Array.isArray(err.details) &&
+      err.details.some((d) => String(d).includes('fake-agent boom details'))
+  );
+});
+
+test('retries once after transient non-zero exit then succeeds', async () => {
+  const dir = await makeTempDir('crs-cursor-retry-');
+  const scriptPath = await writeFakeCursorScript(dir, 'flaky-agent.mjs', FLAKY_THEN_OK_SCRIPT);
+  const { promptFile, outputFile } = await makePromptAndOutput(dir);
+
+  const provider = createCursorReviewProvider({
+    command: process.execPath,
+    args: [scriptPath, '--output', '{outputFile}'],
+    timeoutMs: 10_000,
+    maxOutputChars: 100_000,
+    maxRetries: 1
+  });
+
+  const result = await provider.review({
+    projectDir: dir,
+    promptFile,
+    outputFile,
+    timeoutMs: 10_000
+  });
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(
+    result.rawOutput,
+    '{"summary":"ok","overall_risk":"LOW","findings":[]}'
   );
 });
 

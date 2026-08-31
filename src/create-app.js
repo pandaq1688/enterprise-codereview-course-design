@@ -83,7 +83,8 @@ function createConfiguredProvider(config) {
     command: config.cursor.command,
     args: config.cursor.args,
     timeoutMs: config.cursor.timeoutMs,
-    maxOutputChars: config.cursor.maxOutputChars
+    maxOutputChars: config.cursor.maxOutputChars,
+    maxRetries: typeof config.cursor.maxRetries === 'number' ? config.cursor.maxRetries : 1
   });
 }
 

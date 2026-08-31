@@ -7,8 +7,30 @@ export const SUPPORTED_EXTENSIONS = [
 ];
 
 export const EXCLUDED_DIR_NAMES = new Set([
-  '.git', 'node_modules', 'dist', 'build', 'out', 'target', 'coverage', 'reports', 'logs',
-  '__pycache__', '.venv', 'venv', 'vendor'
+  '.git',
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  'target',
+  'coverage',
+  'reports',
+  'logs',
+  '__pycache__',
+  '.venv',
+  'venv',
+  'vendor',
+  // Non-product trees: tests, tooling, samples, agent process artifacts
+  'tests',
+  'scripts',
+  'examples',
+  '.superpowers',
+  'superpowers',
+  '.sdd',
+  '.cursor',
+  '.worktrees',
+  'tmp',
+  'temp'
 ]);
 
 export function languageFromFileName(name) {

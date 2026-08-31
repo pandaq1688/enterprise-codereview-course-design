@@ -563,7 +563,17 @@ export function createReviewJobService(deps) {
             emptyAi({
               durationMs: Math.max(0, clock.now().getTime() - started.getTime()),
               rawOutput: errRawOutput,
-              stderrSummary: truncate(err instanceof Error ? err.message : String(err), 2000)
+              stderrSummary: truncate(
+                [
+                  err instanceof Error ? err.message : String(err),
+                  ...(Array.isArray(/** @type {{ details?: unknown }} */ (err).details)
+                    ? /** @type {{ details: unknown[] }} */ (err).details.map(String)
+                    : [])
+                ]
+                  .filter(Boolean)
+                  .join('\n'),
+                2000
+              )
             }),
             emptyResult(),
             [entry],
@@ -676,7 +686,12 @@ export function createReviewJobService(deps) {
           collected,
           emptyAi({
             durationMs: Math.max(0, clock.now().getTime() - started.getTime()),
-            stderrSummary: truncate(entry.message, 2000)
+            stderrSummary: truncate(
+              [entry.message, ...(entry.details ?? []).map(String)]
+                .filter(Boolean)
+                .join('\n'),
+              2000
+            )
           }),
           emptyResult(),
           [entry],

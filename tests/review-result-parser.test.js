@@ -19,6 +19,32 @@ test('invalid json becomes AI_OUTPUT_INVALID_JSON without fabricating findings',
   );
 });
 
+test('truncated then complete JSON after reconnect uses the last valid object', () => {
+  const complete = JSON.stringify({
+    summary: 'ok-after-retry',
+    overall_risk: 'HIGH',
+    findings: [
+      {
+        category: 'MEMORY_SAFETY',
+        risk_level: 'HIGH',
+        title: 'null deref',
+        description: 'd',
+        file_path: 'src/a.cpp',
+        evidence: 'e'
+      }
+    ]
+  });
+  // Mimic agent reconnect: first attempt cut mid-object, then a full retry payload.
+  const raw =
+    '{"summary":"partial","overall_risk":"HIGH","findings":[{"category":"X","risk_level":"HIGH","title":"t","description":"d","file_path":"a.cpp","line_start":68,"line_end' +
+    complete;
+  const parsed = parseReviewOutput(raw);
+  assert.equal(parsed.summary, 'ok-after-retry');
+  assert.equal(parsed.overall_risk, 'HIGH');
+  assert.equal(parsed.findings.length, 1);
+  assert.equal(parsed.findings[0].title, 'null deref');
+});
+
 test('missing required finding fields becomes AI_OUTPUT_SCHEMA_INVALID', () => {
   assert.throws(
     () => parseReviewOutput(JSON.stringify({ summary: 's', overall_risk: 'LOW', findings: [{ title: 't' }] })),

@@ -65,6 +65,59 @@ function normalizeRisk(value) {
 }
 
 /**
+ * Find the matching closing `}` for an object starting at `start`,
+ * respecting JSON string escaping so braces inside strings are ignored.
+ * @param {string} text
+ * @param {number} start index of `{`
+ * @returns {number} index of matching `}`, or -1 if incomplete
+ */
+function matchObjectEnd(text, start) {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (c === '\\') {
+        escape = true;
+      } else if (c === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      continue;
+    }
+    if (c === '{') {
+      depth++;
+    } else if (c === '}') {
+      depth--;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
+/**
+ * @param {unknown} parsed
+ * @returns {boolean}
+ */
+function looksLikeReviewObject(parsed) {
+  return (
+    typeof parsed === 'object' &&
+    parsed !== null &&
+    !Array.isArray(parsed) &&
+    typeof /** @type {Record<string, unknown>} */ (parsed).summary === 'string' &&
+    Array.isArray(/** @type {Record<string, unknown>} */ (parsed).findings)
+  );
+}
+
+/**
  * @param {string} raw
  * @returns {string}
  */
@@ -79,13 +132,66 @@ function extractJsonText(raw) {
     text = lines.join('\n').trim();
   }
 
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) {
-    throw new AppError(ErrorCodes.AI_OUTPUT_INVALID_JSON, 'AI 输出不是合法 JSON', []);
+  /**
+   * @param {string} candidate
+   * @returns {unknown | null}
+   */
+  function tryParseObject(candidate) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // not valid JSON
+    }
+    return null;
   }
 
-  return text.slice(start, end + 1);
+  const firstBrace = text.indexOf('{');
+  if (firstBrace !== -1) {
+    const end = matchObjectEnd(text, firstBrace);
+    if (end !== -1) {
+      const candidate = text.slice(firstBrace, end + 1);
+      if (tryParseObject(candidate) !== null) {
+        return candidate;
+      }
+    }
+  }
+
+  // Agent reconnect can concatenate a truncated object with a full retry payload.
+  // Prefer the last complete object that looks like a review result.
+  /** @type {string | null} */
+  let lastReview = null;
+  /** @type {string | null} */
+  let lastAny = null;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') {
+      continue;
+    }
+    const end = matchObjectEnd(text, i);
+    if (end === -1) {
+      continue;
+    }
+    const candidate = text.slice(i, end + 1);
+    const parsed = tryParseObject(candidate);
+    if (parsed === null) {
+      continue;
+    }
+    lastAny = candidate;
+    if (looksLikeReviewObject(parsed)) {
+      lastReview = candidate;
+    }
+  }
+
+  if (lastReview !== null) {
+    return lastReview;
+  }
+  if (lastAny !== null) {
+    return lastAny;
+  }
+
+  throw new AppError(ErrorCodes.AI_OUTPUT_INVALID_JSON, 'AI 输出不是合法 JSON', []);
 }
 
 /**

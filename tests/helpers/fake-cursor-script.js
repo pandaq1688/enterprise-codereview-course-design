@@ -12,7 +12,19 @@ export const TIMEOUT_SCRIPT = `import { setTimeout } from 'node:timers/promises'
 await setTimeout(60_000);
 `;
 
-export const EXIT_NON_ZERO_SCRIPT = `process.exit(2);
+export const EXIT_NON_ZERO_SCRIPT = `process.stderr.write('fake-agent boom details');
+process.exit(2);
+`;
+
+/** Fails on attempt 1 (exit 1 + stderr), succeeds on later attempts. */
+export const FLAKY_THEN_OK_SCRIPT = `import fs from 'node:fs';
+const attempt = process.env.CRS_CURSOR_ATTEMPT || '1';
+const output = process.argv[process.argv.indexOf('--output') + 1];
+if (attempt === '1') {
+  process.stderr.write('transient agent failure');
+  process.exit(1);
+}
+fs.writeFileSync(output, '{"summary":"ok","overall_risk":"LOW","findings":[]}');
 `;
 
 export const LARGE_STDOUT_SCRIPT = `process.stdout.write('x'.repeat(1000));

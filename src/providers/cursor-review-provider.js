@@ -66,12 +66,17 @@ function killProcessTree(child) {
   }
 }
 
+function shouldRetryNonZero(exitCode) {
+  return exitCode !== 0 && exitCode !== null;
+}
+
 /**
  * @param {{
  *   command: string,
  *   args: string[],
  *   timeoutMs: number,
  *   maxOutputChars: number,
+ *   maxRetries?: number,
  *   spawnImpl?: typeof defaultSpawn
  * }} options
  */
@@ -80,12 +85,18 @@ export function createCursorReviewProvider({
   args,
   timeoutMs: defaultTimeoutMs,
   maxOutputChars,
+  maxRetries = 1,
   spawnImpl = defaultSpawn
 }) {
-  async function review({ projectDir, promptFile, outputFile, timeoutMs, signal }) {
-    const started = Date.now();
+  async function runOnce({
+    projectDir,
+    promptFile,
+    outputFile,
+    timeoutMs,
+    signal,
+    attempt
+  }) {
     const effectiveTimeout = timeoutMs ?? defaultTimeoutMs;
-    const useOutputFile = hasOutputFilePlaceholder(args);
     const resolvedArgs = resolveArgs(args, { projectDir, promptFile, outputFile });
 
     let child;
@@ -98,108 +109,153 @@ export function createCursorReviewProvider({
     let spawnError = null;
     let childExited = false;
 
-    try {
-      await new Promise((resolve, reject) => {
-        try {
-          child = spawnImpl(command, resolvedArgs, {
-            shell: false,
-            windowsHide: true
-          });
-        } catch (err) {
-          reject(
-            new AppError(
-              ErrorCodes.CURSOR_START_FAILED,
-              `无法启动 Cursor 命令: ${command}`
-            )
-          );
-          return;
-        }
-
-        let settled = false;
-        const finish = (err) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          if (abortHandler && signal) {
-            signal.removeEventListener('abort', abortHandler);
+    await new Promise((resolve, reject) => {
+      try {
+        child = spawnImpl(command, resolvedArgs, {
+          shell: false,
+          windowsHide: true,
+          env: {
+            ...process.env,
+            CRS_CURSOR_ATTEMPT: String(attempt)
           }
-          if (err) reject(err);
-          else resolve();
-        };
-
-        const onAbort = () => {
-          if (settled || childExited || childHasExited(child)) return;
-          aborted = true;
-          killProcessTree(child);
-        };
-
-        let abortHandler;
-        if (signal) {
-          if (signal.aborted) {
-            onAbort();
-          } else {
-            abortHandler = onAbort;
-            signal.addEventListener('abort', abortHandler, { once: true });
-          }
-        }
-
-        const timer = setTimeout(() => {
-          if (settled || childExited || aborted || childHasExited(child)) return;
-          timedOut = true;
-          killProcessTree(child);
-        }, effectiveTimeout);
-
-        const append = (kind, chunk) => {
-          const text = chunk.toString('utf8');
-          if (kind === 'stdout') stdout += text;
-          else stderr += text;
-          if (stdout.length + stderr.length > maxOutputChars) {
-            outputTooLarge = true;
-            killProcessTree(child);
-          }
-        };
-
-        child.stdout?.on('data', (chunk) => append('stdout', chunk));
-        child.stderr?.on('data', (chunk) => append('stderr', chunk));
-
-        child.on('error', (err) => {
-          spawnError = err;
-          finish();
         });
+      } catch (err) {
+        reject(
+          new AppError(
+            ErrorCodes.CURSOR_START_FAILED,
+            `无法启动 Cursor 命令: ${command}`
+          )
+        );
+        return;
+      }
 
-        child.on('close', (code) => {
-          childExited = true;
-          exitCode = code;
-          finish();
-        });
+      let settled = false;
+      const finish = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (abortHandler && signal) {
+          signal.removeEventListener('abort', abortHandler);
+        }
+        if (err) reject(err);
+        else resolve();
+      };
+
+      const onAbort = () => {
+        if (settled || childExited || childHasExited(child)) return;
+        aborted = true;
+        killProcessTree(child);
+      };
+
+      let abortHandler;
+      if (signal) {
+        if (signal.aborted) {
+          onAbort();
+        } else {
+          abortHandler = onAbort;
+          signal.addEventListener('abort', abortHandler, { once: true });
+        }
+      }
+
+      const timer = setTimeout(() => {
+        if (settled || childExited || aborted || childHasExited(child)) return;
+        timedOut = true;
+        killProcessTree(child);
+      }, effectiveTimeout);
+
+      const append = (kind, chunk) => {
+        const text = chunk.toString('utf8');
+        if (kind === 'stdout') stdout += text;
+        else stderr += text;
+        if (stdout.length + stderr.length > maxOutputChars) {
+          outputTooLarge = true;
+          killProcessTree(child);
+        }
+      };
+
+      child.stdout?.on('data', (chunk) => append('stdout', chunk));
+      child.stderr?.on('data', (chunk) => append('stderr', chunk));
+
+      child.on('error', (err) => {
+        spawnError = err;
+        finish();
       });
 
-      if (spawnError) {
-        throw new AppError(
-          ErrorCodes.CURSOR_START_FAILED,
-          `无法启动 Cursor 命令: ${command}`
-        );
-      }
-      if (aborted) {
-        throw new AppError(ErrorCodes.CURSOR_ABORTED, 'Cursor 审查已取消');
-      }
-      if (timedOut) {
-        throw new AppError(ErrorCodes.CURSOR_TIMEOUT, 'Cursor 审查超时');
-      }
-      if (outputTooLarge) {
-        throw new AppError(
-          ErrorCodes.CURSOR_OUTPUT_TOO_LARGE,
-          'Cursor 输出超过限制'
-        );
-      }
-      if (exitCode !== 0) {
+      child.on('close', (code) => {
+        childExited = true;
+        exitCode = code;
+        finish();
+      });
+    });
+
+    return {
+      spawnError,
+      aborted,
+      timedOut,
+      outputTooLarge,
+      exitCode,
+      stdout,
+      stderr
+    };
+  }
+
+  async function review({ projectDir, promptFile, outputFile, timeoutMs, signal }) {
+    const started = Date.now();
+    const useOutputFile = hasOutputFilePlaceholder(args);
+    const attempts = Math.max(1, (maxRetries ?? 0) + 1);
+    let last = null;
+
+    try {
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        last = await runOnce({
+          projectDir,
+          promptFile,
+          outputFile,
+          timeoutMs,
+          signal,
+          attempt
+        });
+
+        if (last.spawnError) {
+          throw new AppError(
+            ErrorCodes.CURSOR_START_FAILED,
+            `无法启动 Cursor 命令: ${command}`
+          );
+        }
+        if (last.aborted) {
+          throw new AppError(ErrorCodes.CURSOR_ABORTED, 'Cursor 审查已取消');
+        }
+        if (last.timedOut) {
+          throw new AppError(ErrorCodes.CURSOR_TIMEOUT, 'Cursor 审查超时');
+        }
+        if (last.outputTooLarge) {
+          throw new AppError(
+            ErrorCodes.CURSOR_OUTPUT_TOO_LARGE,
+            'Cursor 输出超过限制'
+          );
+        }
+        if (last.exitCode === 0) {
+          break;
+        }
+        if (
+          attempt < attempts &&
+          shouldRetryNonZero(last.exitCode) &&
+          !(signal && signal.aborted)
+        ) {
+          continue;
+        }
+
+        const detailParts = [];
+        if (last.stderr?.trim()) detailParts.push(last.stderr.trim());
+        if (last.stdout?.trim()) detailParts.push(last.stdout.trim());
         throw new AppError(
           ErrorCodes.CURSOR_EXIT_NON_ZERO,
-          `Cursor 进程异常退出，退出码 ${exitCode}`
+          `Cursor 进程异常退出，退出码 ${last.exitCode}`,
+          detailParts
         );
       }
 
-      let rawOutput = stdout;
+      let rawOutput = last.stdout;
       if (useOutputFile) {
         try {
           const st = await fs.stat(outputFile);
@@ -224,9 +280,9 @@ export function createCursorReviewProvider({
 
       return {
         rawOutput,
-        exitCode: exitCode ?? 0,
-        stdout,
-        stderr,
+        exitCode: last.exitCode ?? 0,
+        stdout: last.stdout,
+        stderr: last.stderr,
         durationMs: Date.now() - started,
         providerMetadata: { command }
       };

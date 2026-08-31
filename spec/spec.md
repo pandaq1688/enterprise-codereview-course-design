@@ -342,15 +342,19 @@ MVP 固定支持：
 
 ### 8.2 固定排除目录
 
+按**目录名**匹配（任意层级同名即跳过）：
+
 - .git
 - node_modules
-- dist
-- build
-- out
-- target
-- coverage
-- data/reports
-- data/logs
+- dist / build / out / target / coverage
+- reports / logs（覆盖 `data/reports`、`data/logs`）
+- __pycache__ / .venv / venv / vendor
+- tests（单元与 e2e 测试，不作为被审产品源码）
+- scripts（运维/桥接脚本）
+- examples（演示样例；需审样例时直接以该目录为 projectDir）
+- .superpowers / superpowers / .sdd / .cursor（过程文档与工具产物）
+- .worktrees（嵌套 worktree）
+- tmp / temp
 
 MVP 不提供页面配置这些排除目录，避免误删必要安全边界。
 

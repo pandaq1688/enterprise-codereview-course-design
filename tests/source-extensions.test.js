@@ -24,7 +24,19 @@ test('languageFromFileName maps supported extensions case-insensitively', () => 
 test('shouldSkipDirName matches the fixed exclusion list', () => {
   assert.equal(shouldSkipDirName('node_modules'), true);
   assert.equal(shouldSkipDirName('target'), true);
+  assert.equal(shouldSkipDirName('reports'), true);
+  assert.equal(shouldSkipDirName('tests'), true);
+  assert.equal(shouldSkipDirName('scripts'), true);
+  assert.equal(shouldSkipDirName('examples'), true);
+  assert.equal(shouldSkipDirName('.superpowers'), true);
+  assert.equal(shouldSkipDirName('superpowers'), true);
+  assert.equal(shouldSkipDirName('.sdd'), true);
+  assert.equal(shouldSkipDirName('.cursor'), true);
+  assert.equal(shouldSkipDirName('.worktrees'), true);
+  assert.equal(shouldSkipDirName('tmp'), true);
+  assert.equal(shouldSkipDirName('temp'), true);
   assert.equal(shouldSkipDirName('src'), false);
+  assert.equal(shouldSkipDirName('docs'), false);
 });
 
 test('isBinaryBuffer detects NUL bytes', () => {
