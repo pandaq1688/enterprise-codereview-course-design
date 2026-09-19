@@ -42,7 +42,8 @@ const DEFAULTS = {
       '.c', '.cc', '.cpp', '.cxx',
       '.h', '.hpp', '.hxx', '.java',
       '.js', '.mjs', '.cjs',
-      '.py', '.go'
+      '.py', '.go',
+      '.sql', '.xml', '.lua'
     ]
   },
   cursor: {

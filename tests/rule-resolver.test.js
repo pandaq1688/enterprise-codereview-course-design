@@ -48,6 +48,32 @@ test('loads checklist only for includePaths minus excludePaths', async () => {
   assert.deepEqual(cl.matchedFiles, ['src/a.cpp']);
 });
 
+test('loads C with C++ rules once, and loads SQL/XML and Lua only when those files exist', async () => {
+  const resolved = await resolveRules({
+    projectDir: '/proj',
+    files: [
+      { path: 'src/a.c', language: 'C' },
+      { path: 'src/b.cpp', language: 'CPP' },
+      { path: 'db/order.sql', language: 'SQL' },
+      { path: 'db/OrderMapper.xml', language: 'XML' },
+      { path: 'script/plugin.lua', language: 'LUA' }
+    ],
+    checklist: { enabled: false, path: null, includePaths: ['.'], excludePaths: [] },
+    rulesDir
+  });
+  const cpp = resolved.rules.filter((r) => r.ruleType === 'CPP');
+  assert.equal(cpp.length, 1);
+  assert.deepEqual(cpp[0].matchedFiles, ['src/a.c', 'src/b.cpp']);
+  assert.match(cpp[0].content, /共享内存/);
+  const sql = resolved.rules.find((r) => r.ruleType === 'SQL_XML');
+  assert.deepEqual(sql.matchedFiles, ['db/order.sql', 'db/OrderMapper.xml']);
+  assert.match(sql.content, /绑定参数/);
+  assert.match(resolved.rules.find((r) => r.ruleType === 'LUA').content, /nil/);
+  assert.ok(resolved.rules.find((r) => r.ruleType === 'LUA').matchedFiles.includes('script/plugin.lua'));
+  assert.match(resolved.rules.find((r) => r.ruleType === 'GLOBAL').content, /同一根因/);
+  assert.equal(resolved.rules.some((r) => r.ruleType === 'JAVA'), false);
+});
+
 test('does not load checklist when disabled', async () => {
   const resolved = await resolveRules({
     projectDir: '/proj',

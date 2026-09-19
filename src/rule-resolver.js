@@ -12,15 +12,19 @@ const BUILTIN_FILES = Object.freeze({
   JAVA: 'java-review.md',
   JS: 'js-review.md',
   PYTHON: 'python-review.md',
-  GO: 'go-review.md'
+  GO: 'go-review.md',
+  SQL_XML: 'sql-xml-review.md',
+  LUA: 'lua-review.md'
 });
 
 const LANGUAGE_RULES = Object.freeze([
-  { language: 'CPP', ruleType: 'CPP', fileKey: 'CPP' },
-  { language: 'JAVA', ruleType: 'JAVA', fileKey: 'JAVA' },
-  { language: 'JS', ruleType: 'JS', fileKey: 'JS' },
-  { language: 'PYTHON', ruleType: 'PYTHON', fileKey: 'PYTHON' },
-  { language: 'GO', ruleType: 'GO', fileKey: 'GO' }
+  { languages: ['C', 'CPP'], ruleType: 'CPP', fileKey: 'CPP' },
+  { languages: ['JAVA'], ruleType: 'JAVA', fileKey: 'JAVA' },
+  { languages: ['JS'], ruleType: 'JS', fileKey: 'JS' },
+  { languages: ['PYTHON'], ruleType: 'PYTHON', fileKey: 'PYTHON' },
+  { languages: ['GO'], ruleType: 'GO', fileKey: 'GO' },
+  { languages: ['SQL', 'XML'], ruleType: 'SQL_XML', fileKey: 'SQL_XML' },
+  { languages: ['LUA'], ruleType: 'LUA', fileKey: 'LUA' }
 ]);
 
 /**
@@ -69,7 +73,7 @@ async function readRuleFile(filePath, ruleLabel = filePath) {
 /**
  * @param {object} opts
  * @param {string} opts.ruleId
- * @param {'GLOBAL'|'CPP'|'JAVA'|'JS'|'PYTHON'|'GO'|'CHECKLIST'} opts.ruleType
+ * @param {'GLOBAL'|'CPP'|'JAVA'|'JS'|'PYTHON'|'GO'|'SQL_XML'|'LUA'|'CHECKLIST'} opts.ruleType
  * @param {boolean} opts.builtIn
  * @param {string} opts.content
  * @param {string[]} opts.matchPaths
@@ -121,8 +125,8 @@ export async function resolveRules({ projectDir, files, checklist, rulesDir }) {
     })
   );
 
-  for (const { language, ruleType, fileKey } of LANGUAGE_RULES) {
-    const langFiles = inputFiles.filter((f) => f.language === language).map((f) => f.path);
+  for (const { languages, ruleType, fileKey } of LANGUAGE_RULES) {
+    const langFiles = inputFiles.filter((f) => languages.includes(f.language)).map((f) => f.path);
     if (langFiles.length === 0) continue;
     const fileName = BUILTIN_FILES[fileKey];
     const content = await readRuleFile(path.join(dir, fileName), fileName);

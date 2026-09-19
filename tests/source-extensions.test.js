@@ -17,6 +17,9 @@ test('languageFromFileName maps supported extensions case-insensitively', () => 
   assert.equal(languageFromFileName('Util.PY'), 'PYTHON');
   assert.equal(languageFromFileName('main.go'), 'GO');
   assert.equal(languageFromFileName('Svc.GO'), 'GO');
+  assert.equal(languageFromFileName('order.SQL'), 'SQL');
+  assert.equal(languageFromFileName('Mapper.XML'), 'XML');
+  assert.equal(languageFromFileName('plugin.LUA'), 'LUA');
   assert.equal(languageFromFileName('readme.md'), null);
   assert.equal(languageFromFileName('Makefile'), null);
 });

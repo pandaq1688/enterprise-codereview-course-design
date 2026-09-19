@@ -145,6 +145,23 @@ export function createReviewJobService(deps) {
   }
 
   /**
+   * Release an ephemeral REMOTE_GIT workspace. Must finish before the job
+   * becomes SUCCEEDED/FAILED so waiters do not observe a terminal status
+   * while cleanup is still pending.
+   * @param {object} job
+   */
+  async function runFetchedCleanup(job) {
+    const fn = job._fetchedCleanup;
+    if (typeof fn !== 'function') return;
+    job._fetchedCleanup = null;
+    try {
+      await fn();
+    } catch {
+      // best-effort ephemeral workspace cleanup
+    }
+  }
+
+  /**
    * @param {object} normalizedRequest
    */
   async function collectInputs(normalizedRequest) {
@@ -321,6 +338,7 @@ export function createReviewJobService(deps) {
     const report = buildReport(job, collected, aiPart, resultPart, errors, status);
     try {
       await repository.save(report);
+      await runFetchedCleanup(job);
       setStatus(job, status);
       job.completedAt = report.completedAt;
       job.durationMs = report.durationMs;
@@ -333,6 +351,7 @@ export function createReviewJobService(deps) {
       }
       return report;
     } catch (err) {
+      await runFetchedCleanup(job);
       setStatus(job, 'FAILED');
       const entry = toErrorEntry(err);
       logger.log({
@@ -711,13 +730,7 @@ export function createReviewJobService(deps) {
           // best-effort; Cursor provider may already have removed them
         }
       }
-      if (job._fetchedCleanup) {
-        try {
-          await job._fetchedCleanup();
-        } catch {
-          // best-effort ephemeral workspace cleanup
-        }
-      }
+      await runFetchedCleanup(job);
       logger.log({
         level: 'info',
         event: 'JOB_DONE',

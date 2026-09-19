@@ -56,6 +56,8 @@ export function buildPrompt({ requirementText, sourceMode, files, contents, rule
   const jsRules = ruleList.filter((r) => r.ruleType === 'JS').map((r) => r.content);
   const pythonRules = ruleList.filter((r) => r.ruleType === 'PYTHON').map((r) => r.content);
   const goRules = ruleList.filter((r) => r.ruleType === 'GO').map((r) => r.content);
+  const sqlXmlRules = ruleList.filter((r) => r.ruleType === 'SQL_XML').map((r) => r.content);
+  const luaRules = ruleList.filter((r) => r.ruleType === 'LUA').map((r) => r.content);
   const checklistRules = ruleList.filter((r) => r.ruleType === 'CHECKLIST').map((r) => r.content);
 
   const scopeLines = [
@@ -82,6 +84,12 @@ export function buildPrompt({ requirementText, sourceMode, files, contents, rule
   }
   if (goRules.length > 0) {
     languageRuleBlocks.push('### Go', ...goRules);
+  }
+  if (sqlXmlRules.length > 0) {
+    languageRuleBlocks.push('### SQL/XML', ...sqlXmlRules);
+  }
+  if (luaRules.length > 0) {
+    languageRuleBlocks.push('### Lua', ...luaRules);
   }
 
   const sourceBlocks = fileList.map((f) => {

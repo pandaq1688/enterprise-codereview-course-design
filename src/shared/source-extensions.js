@@ -3,7 +3,8 @@ const JS_EXT = new Set(['.js', '.mjs', '.cjs']);
 
 export const SUPPORTED_EXTENSIONS = [
   '.c', '.cc', '.cpp', '.cxx', '.h', '.hpp', '.hxx', '.java',
-  '.js', '.mjs', '.cjs', '.py', '.go'
+  '.js', '.mjs', '.cjs', '.py', '.go',
+  '.sql', '.xml', '.lua'
 ];
 
 export const EXCLUDED_DIR_NAMES = new Set([
@@ -41,6 +42,9 @@ export function languageFromFileName(name) {
   if (JS_EXT.has(ext)) return 'JS';
   if (ext === '.py') return 'PYTHON';
   if (ext === '.go') return 'GO';
+  if (ext === '.sql') return 'SQL';
+  if (ext === '.xml') return 'XML';
+  if (ext === '.lua') return 'LUA';
   return null;
 }
 
